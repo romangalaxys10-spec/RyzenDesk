@@ -1,0 +1,17 @@
+node_modules
+.next
+.git
+.env
+.env.*
+!.env.example
+data
+db
+docs
+examples
+tests
+skills
+download
+*.log
+worklog.md
+Caddyfile
+prisma
