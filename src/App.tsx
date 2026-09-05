@@ -386,7 +386,13 @@ export function AppContent() {
         const errData = await res.json().catch(() => ({}))
         const errorMsg = errData.error || res.statusText || 'Failed to create board'
         console.error('Failed to create board:', errorMsg)
-        toast.error('Cannot Create Board', errorMsg)
+        if (errData.code === 'PASSWORD_CHANGE_REQUIRED') {
+          toast.error('Password Change Required', 'Change your password before using this feature.')
+        } else if (errData.code === 'FORBIDDEN') {
+          toast.error('Cannot Create Board', `Your role does not allow creating Kanban boards (missing: ${errData.permission || 'permission'})`)
+        } else {
+          toast.error('Cannot Create Board', errorMsg)
+        }
         return null
       }
       const newB = await res.json()

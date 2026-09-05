@@ -74,11 +74,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Ticket,
           badge: openTicketsCount > 0 ? openTicketsCount : undefined,
         },
-        {
-          id: 'kanban' as const,
-          label: 'Team Board (Kanban)',
-          icon: Kanban,
-        },
+        // Respect the server-side kanban_view RBAC permission — hide the module
+        // entirely for roles that cannot view boards (e.g. agents with it off).
+        ...(sessionUser.permissions?.kanban_view === false
+          ? []
+          : [
+              {
+                id: 'kanban' as const,
+                label: 'Team Board (Kanban)',
+                icon: Kanban,
+              },
+            ]),
         {
           id: 'wiki' as const,
           label: 'Knowledge Wiki',
