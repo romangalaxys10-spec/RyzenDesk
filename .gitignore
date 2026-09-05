@@ -14,3 +14,5 @@ data/sessions.json
 data/installed.lock
 data/backup-install-*.json
 data/.install-probe-test
+# The live database holds password hashes + customer PII — generated on first run, never committed.
+data/helpdesk-db.json

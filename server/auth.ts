@@ -139,6 +139,19 @@ export function destroySession(id: string): void {
   persistSessions()
 }
 
+/** Invalidate every session belonging to a user except the current one (used after password change). */
+export function destroyOtherSessionsForUser(username: string, keepSessionId: string): number {
+  let removed = 0
+  for (const [id, s] of sessions) {
+    if (s.username === username && id !== keepSessionId) {
+      sessions.delete(id)
+      removed++
+    }
+  }
+  if (removed > 0) persistSessions()
+  return removed
+}
+
 export function getSessionFromRequest(req: Request): Session | null {
   const raw = req.cookies?.[SESSION_COOKIE] as string | undefined
   if (!raw || typeof raw !== 'string') return null
@@ -164,13 +177,18 @@ export function getSessionFromRequest(req: Request): Session | null {
 }
 
 export function setSessionCookie(res: Response, session: Session): void {
-  const value = `${session.id}.${signSessionId(session.id)}`
+  const value = `${session.id}.${signSessionCookieValue(session.id)}`
+  const secureAttr =
+    process.env.NODE_ENV === 'production' && process.env.FORCE_INSECURE_COOKIE !== '1' ? '; Secure' : ''
   res.setHeader(
     'Set-Cookie',
-    `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${
-      process.env.NODE_ENV === 'production' && process.env.FORCE_INSECURE_COOKIE !== '1' ? '' : ''
-    }`
+    `${SESSION_COOKIE}=${value}; Path=/; HttpOnly; SameSite=Lax; Max-Age=${Math.floor(SESSION_TTL_MS / 1000)}${secureAttr}`
   )
+}
+
+// Renamed wrapper kept so the signing logic stays in one place.
+function signSessionCookieValue(id: string): string {
+  return signSessionId(id)
 }
 
 export function clearSessionCookie(res: Response): void {
@@ -428,13 +446,53 @@ export function cookieParser(req: Request, _res: Response, next: NextFunction): 
    Runs on server start — implements the README "Initial Admin Setup" model.
    -------------------------------------------------------------------------- */
 
+export function isKnownWeakSecret(secret: string | undefined): boolean {
+  if (!secret) return true
+  const weak = ['dev-fallback', 'change-me', 'change-me-to-a-long-random-string']
+  return weak.some((w) => secret === w || secret.includes(w))
+}
+
+/**
+ * Fail closed in production: refuse to boot when session/encryption secrets are
+ * missing or publicly-known defaults — a forgeable-cookie or decryptable-DB
+ * outage is better than a silent one.
+ */
+export function assertProductionSecrets(): void {
+  if (process.env.NODE_ENV !== 'production') return
+  if (process.env.FORCE_INSECURE_SECRETS === '1') {
+    console.warn('[auth] FORCE_INSECURE_SECRETS=1 — booting with weak secrets. NEVER do this on a public host.')
+    return
+  }
+  const problems: string[] = []
+  if (isKnownWeakSecret(process.env.SESSION_SECRET)) problems.push('SESSION_SECRET is missing or a known default')
+  if (process.env.ENCRYPTION_KEY && isKnownWeakSecret(process.env.ENCRYPTION_KEY)) problems.push('ENCRYPTION_KEY is a known default')
+  if (problems.length) {
+    console.error('[auth] Refusing to start in production:\n  - ' + problems.join('\n  - '))
+    process.exit(1)
+  }
+}
+
 export function ensureBootstrapAdmin(): void {
   const db = getDb()
   const anyHashed = db.staff.some((s) => Boolean(s.passwordHash))
   const admin = db.staff.find((s) => s.username === (process.env.SUPERADMIN_USERNAME || 'admin').toLowerCase().trim())
 
   if (admin && !admin.passwordHash) {
-    admin.passwordHash = hashPassword(process.env.SUPERADMIN_PASSWORD || 'RyzenAdmin@2026')
+    let bootstrapPassword = process.env.SUPERADMIN_PASSWORD
+    if (!bootstrapPassword) {
+      if (process.env.NODE_ENV === 'production') {
+        // Never ship a publicly-documented password into production: generate one.
+        bootstrapPassword = secureToken('rdpw', 18)
+        console.log('[auth] SUPERADMIN_PASSWORD not set in production — generated a random bootstrap password (change it after first login):')
+        console.log(`[auth]   ${bootstrapPassword}`)
+      } else {
+        bootstrapPassword = 'RyzenAdmin@2026'
+      }
+    } else if (isKnownWeakSecret(bootstrapPassword) && process.env.NODE_ENV === 'production') {
+      console.error('[auth] SUPERADMIN_PASSWORD is a known default — refusing to provision it in production. Set a unique password.')
+      process.exit(1)
+    }
+    admin.passwordHash = hashPassword(bootstrapPassword)
     admin.mustChangePassword = true
     saveDb(db)
     console.log('[auth] Bootstrap super admin password hash provisioned (password change enforced on first login).')

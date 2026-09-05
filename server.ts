@@ -1,7 +1,8 @@
 import express from 'express'
 import path from 'path'
 import { createServer as createViteServer } from 'vite'
-import { getDb, saveDb, logAudit, DEFAULT_SLA_POLICIES, DEFAULT_RBAC, DEFAULT_INSTALLATION } from './server/db'
+import crypto from 'crypto'
+import { getDb, saveDb, logAudit, DEFAULT_SLA_POLICIES, DEFAULT_RBAC, DEFAULT_INSTALLATION, sealSensitiveFields } from './server/db'
 import {
   sendEmailNotification,
   notifyTicketCreated,
@@ -32,6 +33,8 @@ import {
   clearSessionCookie,
   getSessionFromRequest,
   ensureBootstrapAdmin,
+  assertProductionSecrets,
+  destroyOtherSessionsForUser,
 } from './server/auth'
 import { hashClientToken, isTokenHashed, timingSafeEqualStr } from './server/db'
 import { validateWebhookUrl } from './server/webhooks'
@@ -48,6 +51,7 @@ import type {
   WikiRevision,
   StaffRole,
   StaffMember,
+  RolePermissions,
   InstallationConfig,
   InstallationSettings,
   SystemPreflightCheck,
@@ -66,8 +70,19 @@ function getGeminiClient(): GoogleGenAI | null {
 const activePresence = new Map<string, Map<string, { timestamp: number; action: 'viewing' | 'typing' }>>()
 
 async function startServer() {
+  // Fail closed on weak/missing production secrets before anything binds a port.
+  assertProductionSecrets()
+
   const app = express()
   const PORT = 3000
+
+  // Behind a reverse proxy, req.ip would otherwise be the proxy IP — collapsing
+  // all clients into one rate-limit bucket (and, with the loopback exemption,
+  // disabling login limiting entirely). Configure hops via TRUST_PROXY.
+  if (process.env.TRUST_PROXY) {
+    const hops = Number(process.env.TRUST_PROXY)
+    app.set('trust proxy', Number.isFinite(hops) ? hops : process.env.TRUST_PROXY === 'true')
+  }
 
   app.use(express.json({ limit: '25mb' }))
   app.use(express.urlencoded({ extended: true, limit: '25mb' }))
@@ -219,7 +234,12 @@ async function startServer() {
   })
 
   // Change password (staff). Allowed — and enforced — while mustChangePassword is set.
-  app.post('/api/auth/change-password', (req, res) => {
+  // Rate-limited: scrypt verification is CPU-heavy, so this is both a brute-force
+  // and a DoS surface if left on the global bucket.
+  app.post(
+    '/api/auth/change-password',
+    rateLimit({ windowMs: 15 * 60_000, max: 5, key: 'change-pw' }),
+    (req, res) => {
     const user = req.user
     if (!user || user.kind !== 'staff') {
       return res.status(401).json({ error: 'Staff authentication required' })
@@ -243,10 +263,15 @@ async function startServer() {
     staff.mustChangePassword = false
     saveDb(db)
 
-    logAudit(staff.username, staff.role, 'PASSWORD_CHANGED', 'system', `Password changed from ${req.ip}`, undefined, req.ip)
+    // Session rotation: a stolen cookie must not survive a password change.
+    const session = getSessionFromRequest(req)
+    const removed = session ? destroyOtherSessionsForUser(staff.username, session.id) : 0
+
+    logAudit(staff.username, staff.role, 'PASSWORD_CHANGED', 'system', `Password changed from ${req.ip}; ${removed} other session(s) invalidated`, undefined, req.ip)
 
     res.json({ success: true, message: 'Password updated successfully' })
-  })
+  }
+  )
 
   // Pull initial remote state from GitHub on boot
   void pullRemote()
@@ -480,8 +505,23 @@ async function startServer() {
     const fs = await import('fs')
     const path = await import('path')
 
-    if (config.admin?.password && !isStrongPassword(String(config.admin.password))) {
-      return res.status(400).json({ success: false, error: 'Administrator password must be at least 8 characters.' })
+    // Re-install arm lock: if a previous installation was reset, the wizard's
+    // bootstrap window must not be winnable by whichever unauthenticated party
+    // reaches /execute first. Require the re-arm token issued by /install/reset.
+    const rearm = (db.settings.installation as (InstallationSettings & { rearmToken?: string }) | undefined)?.rearmToken
+    if (rearm) {
+      const provided = String((req.body as Record<string, unknown>)?.rearmToken || req.headers['x-rearm-token'] || '')
+      const a = Buffer.from(provided)
+      const b = Buffer.from(rearm)
+      if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+        return res.status(403).json({ success: false, error: 'Re-install is armed: a valid rearmToken from /api/install/reset is required.', code: 'REARM_REQUIRED' })
+      }
+    }
+
+    // An installation must provision a usable admin: empty password would
+    // create a passwordless super_admin that can never log in.
+    if (!config.admin?.password || !isStrongPassword(String(config.admin.password))) {
+      return res.status(400).json({ success: false, error: 'Administrator password is required and must be at least 8 characters.' })
     }
 
     const nowIso = new Date().toISOString()
@@ -554,6 +594,9 @@ async function startServer() {
     }
 
     // 5. Create backup snapshot and lock file
+    // Backups go through the same at-rest sealing as the main DB file — the
+    // runtime object holds DECRYPTED secrets, so serializing it raw would
+    // write plaintext SMTP/Telegram credentials to disk.
     try {
       const dataDir = path.join(process.cwd(), 'data')
       if (!fs.existsSync(dataDir)) {
@@ -564,20 +607,20 @@ async function startServer() {
         JSON.stringify(
           {
             installedAt: nowIso,
-            version: '2.3.0',
-            lockKey,
+            version: '2.4.0',
+            lockKeyHash: crypto.createHash('sha256').update(lockKey).digest('hex'),
             organizationName: db.settings.installation.organizationName,
           },
           null,
           2
         ),
-        'utf-8'
+        { encoding: 'utf-8', mode: 0o600 }
       )
 
       fs.writeFileSync(
         path.join(dataDir, `backup-install-${Date.now()}.json`),
-        JSON.stringify(db, null, 2),
-        'utf-8'
+        JSON.stringify(sealSensitiveFields(db), null, 2),
+        { encoding: 'utf-8', mode: 0o600 }
       )
     } catch (e) {
       console.error('Backup write warning during install:', e)
@@ -616,18 +659,29 @@ async function startServer() {
   )
 
   // Reset installation (allows re-running wizard) — Super Admin only once installed
+  // Security: resetting flips the wizard into its public bootstrap window, where
+  // /api/install/execute could previously be won by ANY unauthenticated party
+  // (first writer replaces the super admin). We keep the window super-admin-only
+  // after a prior installation by recording that the system was installed before.
   app.post('/api/install/reset', installGuard, (req, res) => {
     const db = getDb()
     if (db.settings.installation) {
+      ;(db.settings.installation as InstallationSettings & { rearmToken?: string }).rearmToken = secureToken('rd_rearm', 24)
       db.settings.installation.installed = false
       db.settings.installation.installedAt = null
     }
     saveDb(db)
     scheduleCloudPush()
-    res.json({ success: true, message: 'Installation state reset. Setup wizard will now activate.' })
+    res.json({
+      success: true,
+      message: 'Installation state reset. Setup wizard will now activate — complete it promptly; /api/install/execute stays restricted while a re-arm token exists.',
+      rearmToken: (db.settings.installation as InstallationSettings & { rearmToken?: string }).rearmToken,
+    })
   })
 
-  // Offline Mode Batch Sync (authenticated staff; scoped mutations)
+  // Offline Mode Batch Sync (authenticated staff; every mutation type is
+  // permission-gated exactly like its interactive counterpart — previously this
+  // endpoint let read-only roles create/overwrite tickets, cards and wiki pages).
   app.post(
     '/api/offline/batch',
     requireStaff,
@@ -636,9 +690,19 @@ async function startServer() {
     const { mutations } = req.body as { mutations?: Array<{ type: string; payload: any }> }
     const db = getDb()
 
+    const REQUIRED_PERM: Record<string, keyof RolePermissions> = {
+      create_ticket: 'tickets_create',
+      update_ticket: 'tickets_edit_status',
+      update_card: 'kanban_edit_cards',
+      save_wiki: 'wiki_create_edit',
+    }
+
     if (Array.isArray(mutations) && mutations.length <= 200) {
       for (const m of mutations) {
         try {
+          const perm = REQUIRED_PERM[m.type]
+          // Unknown mutation types are dropped; known ones are RBAC-enforced.
+          if (!perm || !req.user || req.user.permissions?.[perm] !== true) continue
           if (m.type === 'create_ticket' && m.payload) {
             db.tickets.unshift(m.payload)
           } else if (m.type === 'update_ticket' && m.payload?.id) {
@@ -663,7 +727,18 @@ async function startServer() {
       scheduleCloudPush()
     }
 
-    res.json({ success: true, tickets: db.tickets, kanban: db.kanbanBoards, wiki: db.wikiPages })
+    // Mirror GET /api/tickets scoping: read-only roles must not receive the
+    // full queue through the batch response.
+    const isClient = req.user?.kind === 'client'
+    const canViewAll = req.user?.permissions?.tickets_view_all === true
+    const ticketsOut = isClient
+      ? db.tickets
+          .filter((t) => t.zaiId === req.user!.zaiId || t.contact?.zaiId === req.user!.zaiId || t.contact?.email === req.user!.email)
+          .map(projectTicketForClient)
+      : canViewAll
+        ? db.tickets
+        : []
+    res.json({ success: true, tickets: ticketsOut, kanban: db.kanbanBoards, wiki: db.wikiPages })
   }
   )
 
@@ -688,10 +763,14 @@ async function startServer() {
     let list = [...db.tickets]
     const { status, priority, team, search, sla, zaiId } = req.query
 
-    // Client sessions can only ever see their own tickets
+    // Client sessions can only ever see their own tickets; staff without
+    // tickets_view_all get an empty queue (the doc comment above promised
+    // this — now it's actually enforced).
     const clientScope = req.user!.kind === 'client' ? req.user!.zaiId || req.user!.email : null
     if (clientScope) {
       list = list.filter((t) => t.zaiId === clientScope || t.contact?.zaiId === clientScope || t.contact?.email === req.user!.email)
+    } else if (req.user!.permissions?.tickets_view_all !== true) {
+      list = []
     } else if (zaiId) {
       list = list.filter((t) => t.zaiId === zaiId || t.contact.zaiId === zaiId)
     }
@@ -748,6 +827,9 @@ async function startServer() {
         ticket.contact?.email === req.user!.email
       if (!owns) return res.status(403).json({ error: 'You do not have access to this ticket' })
       return res.json(projectTicketForClient(ticket))
+    }
+    if (req.user!.permissions?.tickets_view_all !== true) {
+      return res.status(403).json({ error: 'Missing required permission: tickets_view_all', code: 'FORBIDDEN', permission: 'tickets_view_all' })
     }
 
     res.json(ticket)
@@ -1929,7 +2011,7 @@ ${threadText}`
     const newStaff: StaffMember = {
       username: cleanUsername,
       displayName: displayName || cleanUsername,
-      role: (role as StaffRole) || 'agent',
+      role: ['super_admin', 'team_lead', 'agent', 'viewer', 'client'].includes(String(role)) ? (role as StaffRole) : 'agent',
       team: (team as Team) || 'Support',
       email: email || `${cleanUsername}@ryzendesk.internal`,
       suspended: false,
@@ -1954,8 +2036,16 @@ ${threadText}`
     const staff = db.staff.find((s) => s.username === req.params.username.toLowerCase())
     if (!staff) return res.status(404).json({ error: 'Staff member not found' })
 
-    // Hardened field allowlist — passwordHash can never be set through this route
-    const { passwordHash, mustChangePassword, username: _ignored, createdAt: _created, ...updates } = req.body || {}
+    // Hardened field allowlist — nothing outside this list can be mutated,
+    // so junk fields (e.g. a stray `password`) can never be persisted or echoed.
+    const ALLOWED_FIELDS = ['displayName', 'email', 'team', 'telegramChatId', 'role', 'suspended'] as const
+    const body = req.body || {}
+    const updates: Record<string, unknown> = {}
+    for (const f of ALLOWED_FIELDS) {
+      if (typeof body[f] !== 'undefined') updates[f] = body[f]
+    }
+    // consumed separately below; never persisted as a plaintext field
+    delete (body as Record<string, unknown>).password
 
     // Safety rails: protect the acting admin and the last super admin
     if (typeof updates.role !== 'undefined' || typeof updates.suspended !== 'undefined') {
@@ -1971,14 +2061,14 @@ ${threadText}`
       }
     }
 
-    if (typeof updates.role !== 'undefined' && !['super_admin', 'team_lead', 'agent', 'viewer', 'client'].includes(updates.role)) {
+    if (typeof updates.role !== 'undefined' && !['super_admin', 'team_lead', 'agent', 'viewer', 'client'].includes(String(updates.role))) {
       return res.status(400).json({ error: 'Invalid role' })
     }
 
     Object.assign(staff, updates)
 
     // Optional password provision/reset through the admin allowlist
-    if (typeof passwordHash === 'undefined' && req.body?.password) {
+    if (req.body?.password) {
       if (!isStrongPassword(String(req.body.password))) {
         return res.status(400).json({ error: 'Password must be at least 8 characters' })
       }
@@ -2001,7 +2091,21 @@ ${threadText}`
 
   app.put('/api/admin/rbac', requirePermission('admin_manage_rbac'), (req, res) => {
     const db = getDb()
-    db.settings.rbac = req.body
+    // Shape validation: the matrix must stay keyed by known roles with
+    // boolean-only permission values — a malformed matrix would lock out
+    // every account (resolveUser returns null).
+    const ROLES = ['super_admin', 'team_lead', 'agent', 'viewer', 'client']
+    const matrix = req.body
+    const valid =
+      matrix && typeof matrix === 'object' && !Array.isArray(matrix) &&
+      ROLES.every((r) =>
+        matrix[r] && typeof matrix[r] === 'object' &&
+        Object.values(matrix[r]).every((v) => typeof v === 'boolean')
+      )
+    if (!valid) {
+      return res.status(400).json({ error: 'Invalid RBAC matrix: expected an object keyed by role with boolean permission values' })
+    }
+    db.settings.rbac = matrix
     saveDb(db)
     scheduleCloudPush()
     logAudit(req.user!.username, req.user!.role, 'RBAC_MATRIX_UPDATED', 'rbac', 'Updated enterprise granular permissions matrix', undefined, req.ip)
@@ -2042,7 +2146,10 @@ ${threadText}`
     saveDb(db)
     scheduleCloudPush()
     logAudit(req.user!.username, req.user!.role, 'SMTP_CONFIG_UPDATED', 'smtp', `Updated SMTP host to ${db.settings.smtp.host}`, undefined, req.ip)
-    res.json({ success: true, smtp: db.settings.smtp })
+    // Never echo the decrypted password back (it would land in logs/devtools)
+    const safeSmtp = { ...db.settings.smtp }
+    if (safeSmtp.pass) safeSmtp.pass = '••••••••••••'
+    res.json({ success: true, smtp: safeSmtp })
   })
 
   app.post('/api/admin/smtp/test', requirePermission('admin_smtp'), rateLimit({ windowMs: 60 * 60_000, max: 10, key: 'smtp-test-admin' }), async (req, res) => {

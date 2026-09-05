@@ -76,11 +76,13 @@ export const InstallationWizard: React.FC<InstallationWizardProps> = ({
   const [backupEnabled, setBackupEnabled] = useState(currentSettings?.backupEnabled ?? true)
 
   // Step 4: Primary Super Admin Account
+  // No default password: a publicly-known initial credential (even a placeholder
+  // that passes the strength meter) is a critical risk on internet-facing installs.
   const [adminName, setAdminName] = useState('Alex Morgan')
   const [adminUsername, setAdminUsername] = useState('admin')
   const [adminEmail, setAdminEmail] = useState('admin@ryzendesk.internal')
-  const [adminPassword, setAdminPassword] = useState('Admin@Secure2026!')
-  const [confirmPassword, setConfirmPassword] = useState('Admin@Secure2026!')
+  const [adminPassword, setAdminPassword] = useState('')
+  const [confirmPassword, setConfirmPassword] = useState('')
   const [showPassword, setShowPassword] = useState(false)
   const [recoveryToken, setRecoveryToken] = useState('')
   const [copiedToken, setCopiedToken] = useState(false)
@@ -200,6 +202,14 @@ export const InstallationWizard: React.FC<InstallationWizardProps> = ({
     setExecutionProgress(5)
     setExecutionLog(['Initiating server installation sequence...'])
 
+    // Client-side guard: never submit an installation without a real admin
+    // password (an empty one would create a passwordless super_admin).
+    if (adminPassword.length < 8 || adminPassword !== confirmPassword) {
+      setExecutionLog((prev) => [...prev, '[ERROR] Administrator password must be at least 8 characters and match the confirmation.'])
+      setIsExecuting(false)
+      return
+    }
+
     const steps = [
       { text: 'Verifying system environment and file storage permissions...', pct: 20 },
       { text: 'Initializing atomic database storage and locking structures...', pct: 40 },
@@ -285,7 +295,7 @@ PRIMARY ADMINISTRATOR CREDENTIALS:
 Username: ${adminUsername}
 Display Name: ${adminName}
 Email: ${adminEmail}
-Master Security Recovery Key: ${recoveryToken}
+Installation Reference Code: ${recoveryToken} (reference only — not used for authentication)
 
 SYSTEM STORAGE & POLICIES:
 Storage Engine: ${storageEngine === 'atomic_json_engine' ? 'RyzenDesk Atomic JSON Engine' : 'Cloud Sync Mirror'}
@@ -944,21 +954,22 @@ KEEP THIS RECEIPT SECURE. Store your Master Security Recovery Key safely.
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
                     <Lock className="w-4 h-4 text-indigo-400" />
-                    <span className="font-bold text-xs text-white">Master Security Recovery Key</span>
+                    <span className="font-bold text-xs text-white">Installation Reference Code</span>
                   </div>
                   <button
                     onClick={copyRecoveryToken}
                     className="flex items-center gap-1 text-xs font-semibold px-2.5 py-1 rounded bg-slate-800 hover:bg-slate-700 text-indigo-300 transition-colors cursor-pointer"
                   >
                     {copiedToken ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
-                    <span>{copiedToken ? 'Copied' : 'Copy Key'}</span>
+                    <span>{copiedToken ? 'Copied' : 'Copy'}</span>
                   </button>
                 </div>
                 <div className="p-2.5 bg-slate-950 rounded-lg font-mono text-sm tracking-wider text-emerald-400 border border-slate-800 select-all">
                   {recoveryToken}
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  Save this key in your password manager. It can bypass locks and verify disaster recovery snapshots.
+                  Reference code for your installation notes. It is NOT used for authentication or recovery —
+                  your admin credentials are the only way to sign in.
                 </p>
               </div>
             </div>

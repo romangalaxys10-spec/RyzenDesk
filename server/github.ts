@@ -44,7 +44,9 @@ function deriveKey(): Buffer {
 
 function isKnownDefaultSecret(): boolean {
   const secret = process.env.ENCRYPTION_KEY || process.env.SESSION_SECRET
-  return !secret || secret === 'dev-fallback' || secret === 'change-me'
+  if (!secret) return true
+  const known = ['dev-fallback', 'change-me', 'change-me-to-a-long-random-string']
+  return known.some((w) => secret === w || secret.includes(w))
 }
 
 function encryptDbPayload(plaintext: string): string {
@@ -152,6 +154,21 @@ export async function pullRemote(): Promise<boolean> {
     }
 
     const parsed = JSON.parse(decrypted.plaintext)
+
+    // Shape validation: pull wholesale-replaces the local DB, so a truncated or
+    // crafted snapshot must never be installed (a missing staff array, for
+    // example, would 500 every route and persist the broken state to disk).
+    const shapeOk =
+      parsed && typeof parsed === 'object' &&
+      Array.isArray(parsed.staff) && Array.isArray(parsed.tickets) &&
+      Array.isArray(parsed.users) && parsed.settings && typeof parsed.settings === 'object'
+    if (!shapeOk) {
+      const msg = 'Remote snapshot rejected: missing required collections (staff/tickets/users/settings).'
+      syncState.lastError = msg
+      console.error(`[cloud-sync] ${msg}`)
+      return false
+    }
+
     if (!decrypted.wasEncrypted) {
       console.log('[cloud-sync] Remote snapshot was legacy cleartext — it will be re-encrypted on the next push.')
     }
@@ -174,9 +191,12 @@ export async function pushRemoteNow(): Promise<{ success: boolean; message: stri
     return { success: false, message: 'GitHub credentials or repo not configured' }
   }
 
-  if (process.env.NODE_ENV === 'production' && isKnownDefaultSecret()) {
+  // Weak secret = the "encrypted" snapshot is decryptable by anyone holding the
+  // public repo. Refuse regardless of NODE_ENV — container deployments often
+  // never set NODE_ENV=production.
+  if (isKnownDefaultSecret()) {
     const msg =
-      'Refusing to push: SESSION_SECRET/ENCRYPTION_KEY is not configured. Set a strong secret so the database snapshot is encrypted before it leaves this server.'
+      'Refusing to push: SESSION_SECRET/ENCRYPTION_KEY is missing or a known default. Set a strong secret so the database snapshot is actually encrypted before it leaves this server.'
     syncState.lastError = msg
     console.error(`[cloud-sync] ${msg}`)
     return { success: false, message: msg }
