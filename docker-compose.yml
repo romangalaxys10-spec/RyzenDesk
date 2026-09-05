@@ -1,0 +1,20 @@
+services:
+  ryzendesk:
+    build: .
+    container_name: ryzendesk
+    ports:
+      - "3000:3000"
+    env_file: .env
+    volumes:
+      # Survives container rebuilds even without GitHub sync configured
+      - ryzendesk-data:/app/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/system/status"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+
+volumes:
+  ryzendesk-data:
