@@ -23,6 +23,91 @@ import type {
 const DATA_DIR = path.join(process.cwd(), 'data')
 const DB_PATH = path.join(DATA_DIR, 'helpdesk-db.json')
 
+/* ==========================================================================
+   At-rest secret protection (RD-SEC-06)
+   - Credential fields (SMTP password, Telegram bot token, installation lock
+     key) are AES-256-GCM encrypted before the DB file is written and are
+     decrypted transparently on load.
+   - Customer access tokens are stored ONLY as SHA-256 digests — the plaintext
+     `zt_...` token is shown once at ticket creation (and emailed) and can
+     never be recovered from the database.
+   ========================================================================== */
+
+const SECRET_ENC_PREFIX = 'enc:v1:'
+const TOKEN_HASH_PREFIX = 'sha256:'
+
+function atRestKey(): Buffer {
+  const secret = process.env.ENCRYPTION_KEY || process.env.SESSION_SECRET || 'dev-fallback'
+  return crypto.scryptSync(secret, 'ryzendesk-at-rest-v1', 32)
+}
+
+export function encryptAtRest(plaintext: string): string {
+  const iv = crypto.randomBytes(12)
+  const cipher = crypto.createCipheriv('aes-256-gcm', atRestKey(), iv)
+  const enc = Buffer.concat([cipher.update(plaintext, 'utf-8'), cipher.final()])
+  const tag = cipher.getAuthTag()
+  return `${SECRET_ENC_PREFIX}${iv.toString('base64')}:${tag.toString('base64')}:${enc.toString('base64')}`
+}
+
+export function decryptAtRest(value: string): string {
+  if (!value || !value.startsWith(SECRET_ENC_PREFIX)) return value
+  try {
+    const [ivB64, tagB64, payloadB64] = value.slice(SECRET_ENC_PREFIX.length).split(':')
+    const decipher = crypto.createDecipheriv('aes-256-gcm', atRestKey(), Buffer.from(ivB64, 'base64'))
+    decipher.setAuthTag(Buffer.from(tagB64, 'base64'))
+    return Buffer.concat([decipher.update(Buffer.from(payloadB64, 'base64')), decipher.final()]).toString('utf-8')
+  } catch {
+    // Wrong key (e.g. SESSION_SECRET rotated) — surface an empty secret rather than crashing
+    return ''
+  }
+}
+
+export function hashClientToken(token: string): string {
+  return `${TOKEN_HASH_PREFIX}${crypto.createHash('sha256').update(token).digest('hex')}`
+}
+
+export function isTokenHashed(token: string): boolean {
+  return typeof token === 'string' && token.startsWith(TOKEN_HASH_PREFIX)
+}
+
+/** Constant-time string comparison for credential digests. */
+export function timingSafeEqualStr(a: string, b: string): boolean {
+  const ba = Buffer.from(a)
+  const bb = Buffer.from(b)
+  if (ba.length !== bb.length) return false
+  return crypto.timingSafeEqual(ba, bb)
+}
+
+/** Mask encrypted/hash fields before writing the DB file to disk. */
+function sealSensitiveFields(db: HelpdeskDB): HelpdeskDB {
+  const clone = JSON.parse(JSON.stringify(db)) as HelpdeskDB
+  if (clone.settings?.smtp?.pass && !clone.settings.smtp.pass.startsWith(SECRET_ENC_PREFIX)) {
+    clone.settings.smtp.pass = encryptAtRest(clone.settings.smtp.pass)
+  }
+  if (clone.settings?.telegram?.botToken && !clone.settings.telegram.botToken.startsWith(SECRET_ENC_PREFIX)) {
+    clone.settings.telegram.botToken = encryptAtRest(clone.settings.telegram.botToken)
+  }
+  if (clone.settings?.installation?.installationLockKey && !clone.settings.installation.installationLockKey.startsWith(SECRET_ENC_PREFIX)) {
+    clone.settings.installation.installationLockKey = encryptAtRest(clone.settings.installation.installationLockKey)
+  }
+  if (Array.isArray(clone.users)) {
+    for (const u of clone.users) {
+      if (u.token && !isTokenHashed(u.token)) u.token = hashClientToken(u.token)
+    }
+  }
+  return clone
+}
+
+/** Decrypt sealed fields after reading the DB file (runtime sees plaintext). */
+function unsealSensitiveFields(db: HelpdeskDB): HelpdeskDB {
+  if (db.settings?.smtp?.pass) db.settings.smtp.pass = decryptAtRest(db.settings.smtp.pass)
+  if (db.settings?.telegram?.botToken) db.settings.telegram.botToken = decryptAtRest(db.settings.telegram.botToken)
+  if (db.settings?.installation?.installationLockKey) {
+    db.settings.installation.installationLockKey = decryptAtRest(db.settings.installation.installationLockKey)
+  }
+  return db
+}
+
 export const DEFAULT_INSTALLATION: InstallationSettings = {
   installed: true,
   installedAt: '2026-09-04T12:00:00.000Z',
@@ -36,8 +121,8 @@ export const DEFAULT_INSTALLATION: InstallationSettings = {
   seededDemoData: true,
   backupEnabled: true,
   adminCreated: true,
-  installationLockKey: 'rd_lock_master_8829',
-  version: '2.3.0',
+  installationLockKey: '',
+  version: '2.4.0',
 }
 
 export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
@@ -67,6 +152,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_webhooks: true,
     admin_smtp: true,
     admin_cloud_sync: true,
+    admin_deploy: true,
     analytics_view: true,
   },
   team_lead: {
@@ -95,6 +181,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_webhooks: false,
     admin_smtp: false,
     admin_cloud_sync: false,
+    admin_deploy: false,
     analytics_view: true,
   },
   agent: {
@@ -103,8 +190,8 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     tickets_reply: true,
     tickets_internal_note: true,
     tickets_edit_status: true,
-    tickets_assign: true,
-    tickets_escalate: true,
+    tickets_assign: false,
+    tickets_escalate: false,
     tickets_delete: false,
     canned_replies_manage: false,
     sla_manage: false,
@@ -114,7 +201,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     kanban_delete_cards: false,
     wiki_view_public: true,
     wiki_view_internal: true,
-    wiki_create_edit: true,
+    wiki_create_edit: false,
     wiki_manage_spaces: false,
     wiki_delete: false,
     admin_manage_staff: false,
@@ -123,6 +210,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_webhooks: false,
     admin_smtp: false,
     admin_cloud_sync: false,
+    admin_deploy: false,
     analytics_view: true,
   },
   viewer: {
@@ -151,6 +239,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_webhooks: false,
     admin_smtp: false,
     admin_cloud_sync: false,
+    admin_deploy: false,
     analytics_view: true,
   },
   client: {
@@ -179,6 +268,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_webhooks: false,
     admin_smtp: false,
     admin_cloud_sync: false,
+    admin_deploy: false,
     analytics_view: false,
   },
 }
@@ -211,10 +301,10 @@ export function seedDatabase(): HelpdeskDB {
         host: 'smtp.sendgrid.net',
         port: 587,
         user: 'apikey',
-        pass: 'SG.demo_key_ryzendesk_notifications',
+        pass: '',
         from: 'notifications@ryzendesk.internal',
         secure: false,
-        enabled: true,
+        enabled: false,
       },
       telegram: {
         botToken: process.env.TELEGRAM_BOT_TOKEN || '',
@@ -891,6 +981,38 @@ function twoHoursAgo(now: Date): string {
 // In-memory reference with automatic local file persistence
 let cachedDb: HelpdeskDB | null = null
 
+/**
+ * Idempotent schema migration for persisted databases.
+ * Guarantees the RBAC matrix contains every documented permission key
+ * (filling missing keys from DEFAULT_RBAC) so server-side enforcement
+ * never encounters undefined permissions after upgrades.
+ */
+function migrateDb(db: HelpdeskDB): HelpdeskDB {
+  if (!db.settings) db.settings = seedDatabase().settings
+  if (!db.settings.installation) db.settings.installation = { ...DEFAULT_INSTALLATION }
+  if (!db.settings.rbac) db.settings.rbac = JSON.parse(JSON.stringify(DEFAULT_RBAC))
+
+  for (const role of Object.keys(DEFAULT_RBAC) as StaffRole[]) {
+    if (!db.settings.rbac[role]) {
+      db.settings.rbac[role] = { ...DEFAULT_RBAC[role] }
+      continue
+    }
+    for (const [perm, value] of Object.entries(DEFAULT_RBAC[role])) {
+      if (typeof db.settings.rbac[role][perm as keyof RolePermissions] === 'undefined') {
+        db.settings.rbac[role][perm as keyof RolePermissions] = value
+      }
+    }
+  }
+
+  // Normalize legacy plaintext customer tokens to irreversible SHA-256 digests
+  if (Array.isArray(db.users)) {
+    for (const u of db.users) {
+      if (u.token && !isTokenHashed(u.token)) u.token = hashClientToken(u.token)
+    }
+  }
+  return db
+}
+
 export function getDb(): HelpdeskDB {
   if (cachedDb) return cachedDb
 
@@ -901,19 +1023,15 @@ export function getDb(): HelpdeskDB {
     if (fs.existsSync(DB_PATH)) {
       const raw = fs.readFileSync(DB_PATH, 'utf-8')
       cachedDb = JSON.parse(raw) as HelpdeskDB
-      if (!cachedDb.settings) {
-        cachedDb.settings = seedDatabase().settings
-      }
-      if (!cachedDb.settings.installation) {
-        cachedDb.settings.installation = { ...DEFAULT_INSTALLATION }
-      }
+      cachedDb = unsealSensitiveFields(cachedDb)
+      cachedDb = migrateDb(cachedDb)
       return cachedDb
     }
   } catch (err) {
     console.error('Failed reading DB from disk, creating seed DB:', err)
   }
 
-  cachedDb = seedDatabase()
+  cachedDb = migrateDb(seedDatabase())
   saveDb(cachedDb)
   return cachedDb
 }
@@ -925,7 +1043,7 @@ export function saveDb(db: HelpdeskDB): void {
     if (!fs.existsSync(DATA_DIR)) {
       fs.mkdirSync(DATA_DIR, { recursive: true })
     }
-    fs.writeFileSync(DB_PATH, JSON.stringify(db, null, 2), 'utf-8')
+    fs.writeFileSync(DB_PATH, JSON.stringify(sealSensitiveFields(db), null, 2), 'utf-8')
   } catch (err) {
     console.error('Failed writing DB to disk:', err)
   }
@@ -942,7 +1060,7 @@ export function logAudit(
 ): void {
   const db = getDb()
   const entry: AuditEntry = {
-    id: `aud_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`,
+    id: `aud_${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
     at: new Date().toISOString(),
     actor,
     actorRole,

@@ -8,3 +8,9 @@ coverage/
 !.env.example
 .github_token
 
+
+# Runtime session & installation state (never commit — contains live session tokens)
+data/sessions.json
+data/installed.lock
+data/backup-install-*.json
+data/.install-probe-test

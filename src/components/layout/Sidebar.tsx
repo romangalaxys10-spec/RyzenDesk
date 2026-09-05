@@ -14,7 +14,7 @@ import {
   Server,
 } from 'lucide-react'
 import { useI18n } from '../../i18n/translations'
-import type { StaffRole } from '../../types'
+import type { SessionUser } from '../../types'
 
 interface SidebarProps {
   activeTab: 'tickets' | 'kanban' | 'wiki' | 'analytics' | 'admin' | 'portal'
@@ -26,8 +26,7 @@ interface SidebarProps {
   pendingCount: number
   lastSyncTime: string
   onSyncNow: () => void
-  currentRole: StaffRole
-  setCurrentRole: (role: StaffRole) => void
+  sessionUser: SessionUser
   openTicketsCount: number
   onOpenInstallWizard?: () => void
 }
@@ -41,20 +40,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
   isSyncing,
   pendingCount,
   onSyncNow,
-  currentRole,
-  setCurrentRole,
+  sessionUser,
   openTicketsCount,
   onOpenInstallWizard,
 }) => {
   const { t } = useI18n()
-
-  const roles: Array<{ id: StaffRole; label: string }> = [
-    { id: 'super_admin', label: 'Super Admin' },
-    { id: 'team_lead', label: 'Team Lead' },
-    { id: 'agent', label: 'Agent' },
-    { id: 'viewer', label: 'Viewer' },
-    { id: 'client', label: 'Client / Customer' },
-  ]
 
   const mainNavItems = [
     {
@@ -187,23 +177,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )
         })}
 
-        {/* Staff Role Switcher in Sidebar */}
+        {/* Authenticated Session Identity (from server — read-only) */}
         <div className="pt-6 px-3">
           <div className="flex items-center gap-1.5 text-xs font-semibold text-slate-500 uppercase tracking-wider mb-2">
             <UserCheck className="w-3.5 h-3.5 text-indigo-400" />
-            <span>Active Role</span>
+            <span>Signed In</span>
           </div>
-          <select
-            value={currentRole}
-            onChange={(e) => setCurrentRole(e.target.value as StaffRole)}
-            className="w-full bg-slate-800 border border-slate-700 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 font-medium focus:outline-none focus:ring-1 focus:ring-indigo-500 cursor-pointer"
-          >
-            {roles.map((r) => (
-              <option key={r.id} value={r.id}>
-                {r.label}
-              </option>
-            ))}
-          </select>
+          <div className="bg-slate-800/60 border border-slate-700 rounded-lg px-2.5 py-2">
+            <p className="text-xs font-bold text-slate-100 truncate">
+              {sessionUser.displayName || sessionUser.username}
+            </p>
+            <p className="text-[10px] font-semibold text-indigo-400 uppercase tracking-wide mt-0.5">
+              {sessionUser.role.replace('_', ' ')}
+            </p>
+            {sessionUser.kind === 'client' && sessionUser.email && (
+              <p className="text-[10px] text-slate-400 truncate mt-0.5">{sessionUser.email}</p>
+            )}
+          </div>
         </div>
 
         {/* Server Setup Wizard Link */}

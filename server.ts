@@ -11,6 +11,30 @@ import {
 } from './server/smtp'
 import { triggerWebhooks, testWebhookEndpoint } from './server/webhooks'
 import { pullRemote, pushRemoteNow, scheduleCloudPush, getSyncStatus } from './server/github'
+import {
+  hashPassword,
+  verifyPassword,
+  isStrongPassword,
+  secureToken,
+  newId,
+  cookieParser,
+  csrfGuard,
+  attachUser,
+  requireAuth,
+  requireStaff,
+  requirePermission,
+  requireSuperAdmin,
+  installGuard,
+  rateLimit,
+  createSession,
+  destroySession,
+  setSessionCookie,
+  clearSessionCookie,
+  getSessionFromRequest,
+  ensureBootstrapAdmin,
+} from './server/auth'
+import { hashClientToken, isTokenHashed, timingSafeEqualStr } from './server/db'
+import { validateWebhookUrl } from './server/webhooks'
 import { GoogleGenAI } from '@google/genai'
 import type {
   Ticket,
@@ -48,8 +72,183 @@ async function startServer() {
   app.use(express.json({ limit: '25mb' }))
   app.use(express.urlencoded({ extended: true, limit: '25mb' }))
 
+  /* ==========================================================================
+     SECURITY MIDDLEWARE
+     ========================================================================== */
+
+  // Baseline security headers
+  app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff')
+    res.setHeader('X-Frame-Options', 'DENY')
+    res.setHeader('Referrer-Policy', 'same-origin')
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+    res.setHeader('Cross-Origin-Opener-Policy', 'same-origin')
+    // HSTS only makes sense over TLS (typically terminated at a reverse proxy)
+    const isHttps = req.headers['x-forwarded-proto'] === 'https' || (req.socket as { encrypted?: boolean }).encrypted
+    if (isHttps) {
+      res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains')
+    }
+    // Content Security Policy (production build serves static assets only)
+    if (process.env.NODE_ENV === 'production') {
+      res.setHeader(
+        'Content-Security-Policy',
+        [
+          "default-src 'self'",
+          "script-src 'self'",
+          "style-src 'self' 'unsafe-inline'", // Recharts/Tailwind inject inline styles
+          "img-src 'self' data: blob:",
+          "font-src 'self' data:",
+          "connect-src 'self'",
+          "frame-ancestors 'none'",
+          "base-uri 'self'",
+          "form-action 'self'",
+        ].join('; ')
+      )
+    }
+    next()
+  })
+
+  // Cookie parsing (sessions) + CSRF origin validation + session resolution
+  app.use(cookieParser)
+  app.use(csrfGuard)
+  app.use(attachUser)
+
+  // Global API rate limit (per IP)
+  app.use('/api', rateLimit({ windowMs: 15 * 60_000, max: 600, key: 'api' }))
+
+  /* ==========================================================================
+     AUTHENTICATION API
+     ========================================================================== */
+
+  // Staff login (username/password, scrypt-verified, signed HttpOnly session cookie)
+  app.post('/api/auth/login', rateLimit({ windowMs: 15 * 60_000, max: 20, key: 'login' }), (req, res) => {
+    const { username, password } = req.body || {}
+    if (!username || !password) {
+      return res.status(400).json({ error: 'Username and password are required' })
+    }
+    const db = getDb()
+    const staff = db.staff.find(
+      (s) => s.username === String(username).toLowerCase().trim()
+    )
+    if (!staff || staff.suspended || !staff.passwordHash) {
+      return res.status(401).json({ error: 'Invalid username or password' })
+    }
+    if (!verifyPassword(String(password), staff.passwordHash)) {
+      return res.status(401).json({ error: 'Invalid username or password' })
+    }
+
+    const session = createSession('staff', {
+      username: staff.username,
+      role: staff.role,
+      email: staff.email,
+      fullName: staff.displayName,
+    })
+    setSessionCookie(res, session)
+
+    logAudit(staff.username, staff.role, 'STAFF_LOGIN', 'system', `Staff sign-in from ${req.ip}`, undefined, req.ip)
+
+    res.json({
+      user: {
+        kind: 'staff',
+        username: staff.username,
+        displayName: staff.displayName,
+        role: staff.role,
+        email: staff.email,
+        mustChangePassword: Boolean(staff.mustChangePassword),
+      },
+    })
+  })
+
+  // Customer login (email + secret access token zt_...)
+  app.post(
+    '/api/auth/customer-login',
+    rateLimit({ windowMs: 15 * 60_000, max: 30, key: 'client-login' }),
+    (req, res) => {
+      const { email, token } = req.body || {}
+      if (!email || !token) {
+        return res.status(400).json({ error: 'Email and secret token are required' })
+      }
+      const db = getDb()
+      const candidate = hashClientToken(String(token).trim())
+      const user = db.users.find((u) => u.email.toLowerCase() === String(email).toLowerCase().trim())
+      // Tokens are stored as SHA-256 digests — verify in constant time
+      if (!user || !isTokenHashed(user.token) || !timingSafeEqualStr(user.token, candidate)) {
+        return res.status(401).json({ error: 'Invalid email or token' })
+      }
+
+      const session = createSession('client', {
+        zaiId: user.zaiId,
+        email: user.email,
+        fullName: user.fullName,
+      })
+      setSessionCookie(res, session)
+
+      logAudit(user.email, 'client', 'CLIENT_LOGIN', 'system', `Customer sign-in from ${req.ip}`, undefined, req.ip)
+
+      res.json({
+        user: {
+          kind: 'client',
+          username: user.zaiId,
+          displayName: user.fullName,
+          role: 'client',
+          email: user.email,
+        },
+      })
+    }
+  )
+
+  // Current session profile
+  app.get('/api/auth/me', (req, res) => {
+    if (!req.user) {
+      return res.status(401).json({ error: 'Not authenticated', code: 'AUTH_REQUIRED' })
+    }
+    const { kind, username, displayName, role, email, zaiId, mustChangePassword, permissions } = req.user
+    res.json({ user: { kind, username, displayName, role, email, zaiId, mustChangePassword, permissions } })
+  })
+
+  // Logout
+  app.post('/api/auth/logout', (req, res) => {
+    const session = getSessionFromRequest(req)
+    if (session) destroySession(session.id)
+    clearSessionCookie(res)
+    res.json({ success: true })
+  })
+
+  // Change password (staff). Allowed — and enforced — while mustChangePassword is set.
+  app.post('/api/auth/change-password', (req, res) => {
+    const user = req.user
+    if (!user || user.kind !== 'staff') {
+      return res.status(401).json({ error: 'Staff authentication required' })
+    }
+    const { currentPassword, newPassword } = req.body || {}
+    const db = getDb()
+    const staff = db.staff.find((s) => s.username === user.username)
+    if (!staff) return res.status(404).json({ error: 'Account not found' })
+
+    if (!verifyPassword(String(currentPassword || ''), staff.passwordHash)) {
+      return res.status(401).json({ error: 'Current password is incorrect' })
+    }
+    if (!isStrongPassword(String(newPassword || ''))) {
+      return res.status(400).json({ error: 'New password must be at least 8 characters' })
+    }
+    if (verifyPassword(String(newPassword), staff.passwordHash)) {
+      return res.status(400).json({ error: 'New password must differ from the current password' })
+    }
+
+    staff.passwordHash = hashPassword(String(newPassword))
+    staff.mustChangePassword = false
+    saveDb(db)
+
+    logAudit(staff.username, staff.role, 'PASSWORD_CHANGED', 'system', `Password changed from ${req.ip}`, undefined, req.ip)
+
+    res.json({ success: true, message: 'Password updated successfully' })
+  })
+
   // Pull initial remote state from GitHub on boot
   void pullRemote()
+
+  // Guarantee the documented bootstrap super admin has a real password hash
+  ensureBootstrapAdmin()
 
   /* ==========================================================================
      API ROUTES
@@ -60,8 +259,8 @@ async function startServer() {
     res.json({ status: 'ok', time: new Date().toISOString() })
   })
 
-  // System & Cloud Sync Status
-  app.get('/api/system/status', (req, res) => {
+  // System & Cloud Sync Status (staff-only operational telemetry)
+  app.get('/api/system/status', requireStaff, (req, res) => {
     const db = getDb()
     const sync = getSyncStatus()
     res.json({
@@ -77,25 +276,29 @@ async function startServer() {
     })
   })
 
-  // Force Cloud Sync Push/Pull
-  app.post('/api/sync/push', async (req, res) => {
+  // Force Cloud Sync Push/Pull (cloud sync permission — Support Manager & Super Admin)
+  app.post('/api/sync/push', requirePermission('admin_cloud_sync'), async (req, res) => {
     const result = await pushRemoteNow()
+    logAudit(req.user!.username, req.user!.role, 'CLOUD_SYNC_PUSH', 'system', `Manual cloud sync push from ${req.ip}`, undefined, req.ip)
     res.json(result)
   })
 
-  app.post('/api/sync/pull', async (req, res) => {
+  app.post('/api/sync/pull', requirePermission('admin_cloud_sync'), async (req, res) => {
     const pulled = await pullRemote()
     res.json({ success: pulled, status: getSyncStatus() })
   })
 
-  // Codebase Deployment to GitHub
-  app.post('/api/admin/deploy-codebase', async (req, res) => {
+  // Codebase Deployment to GitHub (documented Super Admin capability)
+  app.post('/api/admin/deploy-codebase', requirePermission('admin_deploy'), async (req, res) => {
     try {
       const { execSync } = await import('child_process')
       const output = execSync('npx tsx scripts/deploy-to-github.ts', {
         encoding: 'utf-8',
         cwd: process.cwd(),
+        timeout: 120_000,
+        env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
       })
+      logAudit(req.user!.username, req.user!.role, 'CODEBASE_DEPLOYED', 'system', `Full codebase deployment triggered from ${req.ip}`, undefined, req.ip)
       res.json({ success: true, output })
     } catch (err: any) {
       res.status(500).json({ success: false, error: err.message, output: err.stdout || err.stderr })
@@ -106,8 +309,8 @@ async function startServer() {
      INSTALLATION & SERVER SETUP WIZARD API
      ========================================================================== */
 
-  // System pre-flight environment checks
-  app.get('/api/install/preflight', async (req, res) => {
+  // System pre-flight environment checks (public during first-run bootstrap, admin-only afterwards)
+  app.get('/api/install/preflight', installGuard, async (req, res) => {
     const fs = await import('fs')
     const path = await import('path')
     const os = await import('os')
@@ -207,13 +410,14 @@ async function startServer() {
     })
   })
 
-  // Installation status
+  // Installation status (public — exposes installation flag & counts only, never the lock key)
   app.get('/api/install/status', (req, res) => {
     const db = getDb()
     const installation = db.settings.installation || DEFAULT_INSTALLATION
+    const { installationLockKey, ...safeSettings } = installation
     res.json({
       installed: Boolean(installation.installed),
-      settings: installation,
+      settings: safeSettings,
       stats: {
         ticketsCount: db.tickets.length,
         staffCount: db.staff.length,
@@ -224,8 +428,8 @@ async function startServer() {
     })
   })
 
-  // Test SMTP connection during wizard
-  app.post('/api/install/test-smtp', async (req, res) => {
+  // Test SMTP connection during wizard (bootstrap window) / Super Admin (post-install)
+  app.post('/api/install/test-smtp', installGuard, rateLimit({ windowMs: 60 * 60_000, max: 10, key: 'smtp-test' }), async (req, res) => {
     const { host, port, user, pass, from, targetEmail } = req.body
     try {
       const log = await sendEmailNotification({
@@ -240,8 +444,8 @@ async function startServer() {
     }
   })
 
-  // Test Gemini AI connection during wizard
-  app.post('/api/install/test-ai', async (req, res) => {
+  // Test Gemini AI connection during wizard (bootstrap window) / Super Admin (post-install)
+  app.post('/api/install/test-ai', installGuard, rateLimit({ windowMs: 60 * 60_000, max: 10, key: 'ai-test' }), async (req, res) => {
     const { apiKey } = req.body
     const testKey = apiKey || process.env.GEMINI_API_KEY
     if (!testKey) {
@@ -260,15 +464,24 @@ async function startServer() {
     }
   })
 
-  // Execute installation
-  app.post('/api/install/execute', async (req, res) => {
+  // Execute installation — open ONLY during the first-run bootstrap window;
+  // once installed, reconfiguration requires an authenticated Super Admin.
+  app.post(
+    '/api/install/execute',
+    installGuard,
+    rateLimit({ windowMs: 60 * 60_000, max: 5, key: 'install-execute' }),
+    async (req, res) => {
     const config = req.body as InstallationConfig
     const db = getDb()
     const fs = await import('fs')
     const path = await import('path')
 
+    if (config.admin?.password && !isStrongPassword(String(config.admin.password))) {
+      return res.status(400).json({ success: false, error: 'Administrator password must be at least 8 characters.' })
+    }
+
     const nowIso = new Date().toISOString()
-    const lockKey = `rd_lock_${Math.random().toString(36).substring(2, 12)}_${Date.now()}`
+    const lockKey = secureToken('rd_lock', 24)
 
     // 1. Update Organization & System Settings
     db.settings.installation = {
@@ -288,7 +501,7 @@ async function startServer() {
       version: '2.3.0',
     }
 
-    // 2. Configure Super Admin Account
+    // 2. Configure Super Admin Account (with real password hash when provided)
     if (config.admin?.username) {
       const adminUser = config.admin.username.toLowerCase().trim()
       const existingIdx = db.staff.findIndex((s) => s.username === adminUser || s.role === 'super_admin')
@@ -301,6 +514,11 @@ async function startServer() {
         suspended: false,
         telegramChatId: null,
         createdAt: nowIso,
+      } as StaffMember
+
+      if (config.admin.password) {
+        adminObj.passwordHash = hashPassword(String(config.admin.password))
+        adminObj.mustChangePassword = false
       }
 
       if (existingIdx !== -1) {
@@ -365,16 +583,18 @@ async function startServer() {
     scheduleCloudPush()
 
     logAudit(
-      config.admin?.username || 'admin',
+      req.user?.username || config.admin?.username || 'admin',
       'super_admin',
       'SYSTEM_INSTALLATION_COMPLETED',
       'system',
-      `Installation wizard executed for ${db.settings.installation.organizationName} (${db.settings.installation.storageEngine})`
+      `Installation wizard executed for ${db.settings.installation.organizationName} (${db.settings.installation.storageEngine}) from ${req.ip}`,
+      undefined,
+      req.ip
     )
 
     res.json({
       success: true,
-      installation: db.settings.installation,
+      installation: { ...db.settings.installation, installationLockKey: undefined },
       receipt: {
         organizationName: db.settings.installation.organizationName,
         helpdeskName: db.settings.installation.helpdeskName,
@@ -384,14 +604,15 @@ async function startServer() {
         installedAt: nowIso,
         storageEngine: db.settings.installation.storageEngine,
         lockKey,
-        version: '2.3.0',
+        version: '2.4.0',
         demoDataSeeded: config.seedDemoData,
       },
     })
-  })
+  }
+  )
 
-  // Reset installation (allows re-running wizard)
-  app.post('/api/install/reset', (req, res) => {
+  // Reset installation (allows re-running wizard) — Super Admin only once installed
+  app.post('/api/install/reset', installGuard, (req, res) => {
     const db = getDb()
     if (db.settings.installation) {
       db.settings.installation.installed = false
@@ -402,12 +623,16 @@ async function startServer() {
     res.json({ success: true, message: 'Installation state reset. Setup wizard will now activate.' })
   })
 
-  // Offline Mode Batch Sync
-  app.post('/api/offline/batch', (req, res) => {
+  // Offline Mode Batch Sync (authenticated staff; scoped mutations)
+  app.post(
+    '/api/offline/batch',
+    requireStaff,
+    rateLimit({ windowMs: 15 * 60_000, max: 30, key: 'offline-batch' }),
+    (req, res) => {
     const { mutations } = req.body as { mutations?: Array<{ type: string; payload: any }> }
     const db = getDb()
 
-    if (Array.isArray(mutations)) {
+    if (Array.isArray(mutations) && mutations.length <= 200) {
       for (const m of mutations) {
         try {
           if (m.type === 'create_ticket' && m.payload) {
@@ -435,18 +660,35 @@ async function startServer() {
     }
 
     res.json({ success: true, tickets: db.tickets, kanban: db.kanbanBoards, wiki: db.wikiPages })
-  })
+  }
+  )
 
   /* --------------------------------------------------------------------------
      TICKETS API
+     - Staff require tickets_view_all for the global queue.
+     - Authenticated customers (client sessions) are hard-scoped to their own
+       tickets and never receive internal notes.
      -------------------------------------------------------------------------- */
 
-  app.get('/api/tickets', (req, res) => {
+  // Serializable ticket projection with internal notes stripped (for clients)
+  function projectTicketForClient(ticket: Ticket): Ticket {
+    return {
+      ...ticket,
+      messages: (ticket.messages || []).filter((m) => m.visibility !== 'internal'),
+      timeLogs: [],
+    }
+  }
+
+  app.get('/api/tickets', requireAuth, (req, res) => {
     const db = getDb()
     let list = [...db.tickets]
     const { status, priority, team, search, sla, zaiId } = req.query
 
-    if (zaiId) {
+    // Client sessions can only ever see their own tickets
+    const clientScope = req.user!.kind === 'client' ? req.user!.zaiId || req.user!.email : null
+    if (clientScope) {
+      list = list.filter((t) => t.zaiId === clientScope || t.contact?.zaiId === clientScope || t.contact?.email === req.user!.email)
+    } else if (zaiId) {
       list = list.filter((t) => t.zaiId === zaiId || t.contact.zaiId === zaiId)
     }
     if (status && status !== 'all') {
@@ -482,19 +724,51 @@ async function startServer() {
       )
     }
 
-    res.json(list)
+    if (clientScope) {
+      res.json(list.map(projectTicketForClient))
+    } else {
+      res.json(list)
+    }
   })
 
-  app.get('/api/tickets/:id', (req, res) => {
+  app.get('/api/tickets/:id', requireAuth, (req, res) => {
     const db = getDb()
     const ticket = db.tickets.find((t) => t.id === req.params.id)
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
+
+    const clientScope = req.user!.kind === 'client'
+    if (clientScope) {
+      const owns =
+        ticket.zaiId === req.user!.zaiId ||
+        ticket.contact?.zaiId === req.user!.zaiId ||
+        ticket.contact?.email === req.user!.email
+      if (!owns) return res.status(403).json({ error: 'You do not have access to this ticket' })
+      return res.json(projectTicketForClient(ticket))
+    }
+
     res.json(ticket)
   })
 
-  app.post('/api/tickets', (req, res) => {
+  // Public ticket submission (documented token-based customer flow) — rate limited & validated
+  app.post(
+    '/api/tickets',
+    rateLimit({ windowMs: 15 * 60_000, max: 30, key: 'ticket-create' }),
+    (req, res) => {
     const db = getDb()
-    const { contact, subject, type, priority, team, body, reproduction, attachments, tags } = req.body
+    const { contact, subject, type, priority, team, body, reproduction, attachments, tags } = req.body || {}
+
+    if (!contact || !contact.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(String(contact.email))) {
+      return res.status(400).json({ error: 'A valid contact email is required' })
+    }
+    if (!subject || String(subject).length > 200) {
+      return res.status(400).json({ error: 'Subject is required (max 200 characters)' })
+    }
+    const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 10) : []
+    for (const a of safeAttachments) {
+      if (typeof a?.data === 'string' && a.data.length > 4_000_000) {
+        return res.status(413).json({ error: 'Attachment too large (max ~3MB per file)' })
+      }
+    }
 
     db.meta.ticketCounter += 1
     const ticketId = `RD-2026-${String(db.meta.ticketCounter).padStart(4, '0')}`
@@ -504,17 +778,17 @@ async function startServer() {
     const responseDueAt = new Date(now.getTime() + policy.firstResponseHours * 3600_000).toISOString()
     const resolutionDueAt = new Date(now.getTime() + policy.resolutionHours * 3600_000).toISOString()
 
-    const zaiId = contact?.zaiId || `usr_${Math.random().toString(36).substring(2, 9)}`
-    const secretToken = `zt_${Math.random().toString(36).substring(2, 10)}`
+    const zaiId = contact?.zaiId || secureToken('usr', 9)
+    const secretToken = secureToken('zt', 24)
 
-    // Ensure user in CRM
+    // Ensure user in CRM (token stored as SHA-256 digest — plaintext shown once & emailed)
     const existingUser = db.users.find((u) => u.email === contact.email)
     if (!existingUser) {
       db.users.push({
         zaiId,
         fullName: contact.fullName,
         email: contact.email,
-        token: secretToken,
+        token: hashClientToken(secretToken),
         telegramChatId: null,
         createdAt: now.toISOString(),
         updatedAt: now.toISOString(),
@@ -570,17 +844,18 @@ async function startServer() {
       contact: newTicket.contact,
     })
 
-    logAudit(contact.fullName, 'client', 'TICKET_CREATED', 'tickets', `Created ticket ${ticketId}`, ticketId)
+    logAudit(contact.fullName || contact.email, 'client', 'TICKET_CREATED', 'tickets', `Created ticket ${ticketId} from ${req.ip}`, ticketId, req.ip)
 
     res.status(201).json({ ticket: newTicket, secretToken })
-  })
+  }
+  )
 
-  app.patch('/api/tickets/:id', (req, res) => {
+  app.patch('/api/tickets/:id', requirePermission('tickets_edit_status'), (req, res) => {
     const db = getDb()
     const ticket = db.tickets.find((t) => t.id === req.params.id)
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
 
-    const { status, priority, assignee, team, actor = 'staff' } = req.body
+    const { status, priority, assignee, team } = req.body || {}
     const previousStatus = ticket.status
 
     if (status) {
@@ -599,7 +874,12 @@ async function startServer() {
       ticket.sla.responseDueAt = new Date(createdTime + policy.firstResponseHours * 3600_000).toISOString()
       ticket.sla.resolutionDueAt = new Date(createdTime + policy.resolutionHours * 3600_000).toISOString()
     }
-    if (assignee !== undefined) ticket.assignee = assignee
+    if (assignee !== undefined) {
+      if (!req.user!.permissions.tickets_assign) {
+        return res.status(403).json({ error: 'Missing required permission: tickets_assign', code: 'FORBIDDEN', permission: 'tickets_assign' })
+      }
+      ticket.assignee = assignee
+    }
     if (team) ticket.team = team as Team
 
     ticket.updatedAt = new Date().toISOString()
@@ -615,29 +895,50 @@ async function startServer() {
     }
 
     logAudit(
-      actor,
-      'staff',
+      req.user!.username,
+      req.user!.role,
       'TICKET_UPDATED',
       'tickets',
       `Updated ticket ${ticket.id}: status=${ticket.status}, priority=${ticket.priority}, assignee=${ticket.assignee}`,
-      ticket.id
+      ticket.id,
+      req.ip
     )
 
     res.json(ticket)
   })
 
-  app.post('/api/tickets/:id/messages', (req, res) => {
+  app.post('/api/tickets/:id/messages', requirePermission('tickets_reply'), (req, res) => {
     const db = getDb()
     const ticket = db.tickets.find((t) => t.id === req.params.id)
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
 
-    const { from, author, body, visibility = 'public', attachments = [] } = req.body
-    const messageId = `msg_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`
+    const isClient = req.user!.kind === 'client'
+    if (isClient) {
+      const owns =
+        ticket.zaiId === req.user!.zaiId ||
+        ticket.contact?.zaiId === req.user!.zaiId ||
+        ticket.contact?.email === req.user!.email
+      if (!owns) return res.status(403).json({ error: 'You do not have access to this ticket' })
+    }
+
+    const { body, visibility = 'public', attachments = [] } = req.body || {}
+    // Clients can never author internal notes — explicit rejection (no silent downgrade)
+    if (isClient && visibility === 'internal') {
+      return res.status(403).json({ error: 'Customers cannot add internal notes', code: 'FORBIDDEN' })
+    }
+    // The 'from' identity is derived from the session, never the request body.
+    const from = isClient ? 'user' : 'staff'
+    const author = isClient ? req.user!.displayName : req.user!.displayName || 'Support Agent'
+    if (!isClient && visibility === 'internal' && !req.user!.permissions.tickets_internal_note) {
+      return res.status(403).json({ error: 'Missing required permission: tickets_internal_note', code: 'FORBIDDEN', permission: 'tickets_internal_note' })
+    }
+    const safeVisibility = visibility === 'internal' ? 'internal' : 'public'
+    const messageId = newId('msg')
     const nowIso = new Date().toISOString()
 
     const newMsg = {
       id: messageId,
-      from: from || 'staff',
+      from: from as 'user' | 'staff',
       author: author || 'Support Agent',
       body,
       visibility: visibility as 'public' | 'internal',
@@ -671,29 +972,30 @@ async function startServer() {
 
     logAudit(
       author,
-      from === 'staff' ? 'agent' : 'client',
+      from === 'staff' ? req.user!.role : 'client',
       'MESSAGE_ADDED',
       'tickets',
-      `Added ${visibility} message to ticket ${ticket.id}`,
-      ticket.id
+      `Added ${safeVisibility} message to ticket ${ticket.id}`,
+      ticket.id,
+      req.ip
     )
 
     res.status(201).json(newMsg)
   })
 
-  app.post('/api/tickets/:id/escalate', (req, res) => {
+  app.post('/api/tickets/:id/escalate', requirePermission('tickets_escalate'), (req, res) => {
     const db = getDb()
     const ticket = db.tickets.find((t) => t.id === req.params.id)
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
 
-    const { from, toMember, toTeam, reason } = req.body
-    const escId = `esc_${Date.now()}`
+    const { toMember, toTeam, reason } = req.body || {}
+    const escId = newId('esc')
     const nowIso = new Date().toISOString()
 
     const escalation = {
       id: escId,
       at: nowIso,
-      from: from || 'staff',
+      from: req.user!.username,
       toMember,
       toTeam,
       reason: reason || 'Level escalation requested',
@@ -713,12 +1015,13 @@ async function startServer() {
     void triggerWebhooks('ticket.escalated', { ticketId: ticket.id, toMember, toTeam, reason })
 
     logAudit(
-      from,
-      'staff',
+      req.user!.username,
+      req.user!.role,
       'TICKET_ESCALATED',
       'tickets',
       `Escalated ticket ${ticket.id} to ${toMember} (${toTeam}): ${reason}`,
-      ticket.id
+      ticket.id,
+      req.ip
     )
 
     res.json(ticket)
@@ -729,12 +1032,18 @@ async function startServer() {
      -------------------------------------------------------------------------- */
 
   // Bulk operations on tickets
-  app.post('/api/tickets/bulk', (req, res) => {
+  app.post('/api/tickets/bulk', requirePermission('tickets_edit_status'), (req, res) => {
     const db = getDb()
-    const { ticketIds, action, value, actor = 'staff' } = req.body
+    const { ticketIds, action, value } = req.body || {}
 
     if (!Array.isArray(ticketIds) || ticketIds.length === 0) {
       return res.status(400).json({ error: 'No ticket IDs provided' })
+    }
+    if (ticketIds.length > 200) {
+      return res.status(400).json({ error: 'Bulk operations are limited to 200 tickets at a time' })
+    }
+    if (action === 'assign' && !req.user!.permissions.tickets_assign) {
+      return res.status(403).json({ error: 'Missing required permission: tickets_assign', code: 'FORBIDDEN', permission: 'tickets_assign' })
     }
 
     const updated: Ticket[] = []
@@ -766,24 +1075,24 @@ async function startServer() {
 
     saveDb(db)
     scheduleCloudPush()
-    logAudit(actor, 'staff', 'TICKETS_BULK_UPDATED', 'tickets', `Bulk updated ${updated.length} tickets (${action}=${value})`)
+    logAudit(req.user!.username, req.user!.role, 'TICKETS_BULK_UPDATED', 'tickets', `Bulk updated ${updated.length} tickets (${action}=${value})`, undefined, req.ip)
 
     res.json({ success: true, count: updated.length, tickets: updated })
   })
 
   // Time logging on tickets
-  app.post('/api/tickets/:id/timelogs', (req, res) => {
+  app.post('/api/tickets/:id/timelogs', requirePermission('tickets_reply'), (req, res) => {
     const db = getDb()
     const ticket = db.tickets.find((t) => t.id === req.params.id)
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
 
-    const { minutes, description, isBillable = true, author = 'staff' } = req.body
+    const { minutes, description, isBillable = true } = req.body || {}
     if (!minutes || minutes <= 0) return res.status(400).json({ error: 'Valid minutes required' })
 
     const newLog = {
-      id: `time_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+      id: newId('time'),
       ticketId: ticket.id,
-      author,
+      author: req.user!.username,
       minutes: Number(minutes),
       description: description || 'Support activity',
       isBillable: Boolean(isBillable),
@@ -796,16 +1105,24 @@ async function startServer() {
 
     saveDb(db)
     scheduleCloudPush()
-    logAudit(author, 'staff', 'TIME_LOGGED', 'tickets', `Logged ${minutes}m on ticket ${ticket.id}: ${description}`, ticket.id)
+    logAudit(req.user!.username, req.user!.role, 'TIME_LOGGED', 'tickets', `Logged ${minutes}m on ticket ${ticket.id}: ${description}`, ticket.id, req.ip)
 
     res.status(201).json({ success: true, timeLog: newLog, totalMinutes: ticket.timeLogs.reduce((a, b) => a + b.minutes, 0) })
   })
 
-  // Customer Satisfaction (CSAT) rating submission
-  app.post('/api/tickets/:id/csat', (req, res) => {
+  // Customer Satisfaction (CSAT) rating submission (ticket owner or staff)
+  app.post('/api/tickets/:id/csat', requireAuth, (req, res) => {
     const db = getDb()
     const ticket = db.tickets.find((t) => t.id === req.params.id)
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
+
+    if (req.user!.kind === 'client') {
+      const owns =
+        ticket.zaiId === req.user!.zaiId ||
+        ticket.contact?.zaiId === req.user!.zaiId ||
+        ticket.contact?.email === req.user!.email
+      if (!owns) return res.status(403).json({ error: 'You do not have access to this ticket' })
+    }
 
     const { rating, feedback } = req.body
     const numRating = Math.max(1, Math.min(5, Number(rating) || 5))
@@ -819,18 +1136,18 @@ async function startServer() {
 
     saveDb(db)
     scheduleCloudPush()
-    logAudit(ticket.contact.fullName, 'client', 'CSAT_SUBMITTED', 'tickets', `Submitted CSAT ${numRating}/5 on ticket ${ticket.id}`, ticket.id)
+    logAudit(req.user!.username, req.user!.role, 'CSAT_SUBMITTED', 'tickets', `Submitted CSAT ${numRating}/5 on ticket ${ticket.id}`, ticket.id, req.ip)
 
     res.json({ success: true, csat: ticket.csat })
   })
 
   // Link two tickets
-  app.post('/api/tickets/:id/link', (req, res) => {
+  app.post('/api/tickets/:id/link', requirePermission('tickets_edit_status'), (req, res) => {
     const db = getDb()
     const ticket = db.tickets.find((t) => t.id === req.params.id)
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' })
 
-    const { targetTicketId, relation = 'relates_to', actor = 'staff' } = req.body
+    const { targetTicketId, relation = 'relates_to' } = req.body || {}
     const targetTicket = db.tickets.find((t) => t.id === targetTicketId)
     if (!targetTicket) return res.status(404).json({ error: 'Target ticket not found' })
     if (ticket.id === targetTicket.id) return res.status(400).json({ error: 'Cannot link ticket to itself' })
@@ -841,7 +1158,7 @@ async function startServer() {
         ticketId: targetTicketId,
         relation,
         linkedAt: new Date().toISOString(),
-        linkedBy: actor,
+        linkedBy: req.user!.username,
       })
     }
 
@@ -853,7 +1170,7 @@ async function startServer() {
         ticketId: ticket.id,
         relation: inverseRelation,
         linkedAt: new Date().toISOString(),
-        linkedBy: actor,
+        linkedBy: req.user!.username,
       })
     }
 
@@ -862,18 +1179,18 @@ async function startServer() {
 
     saveDb(db)
     scheduleCloudPush()
-    logAudit(actor, 'staff', 'TICKET_LINKED', 'tickets', `Linked ticket ${ticket.id} (${relation}) with ${targetTicketId}`, ticket.id)
+    logAudit(req.user!.username, req.user!.role, 'TICKET_LINKED', 'tickets', `Linked ticket ${ticket.id} (${relation}) with ${targetTicketId}`, ticket.id, req.ip)
 
     res.json({ success: true, linkedTickets: ticket.linkedTickets })
   })
 
   // Merge tickets
-  app.post('/api/tickets/:id/merge', (req, res) => {
+  app.post('/api/tickets/:id/merge', requirePermission('tickets_edit_status'), (req, res) => {
     const db = getDb()
     const sourceTicket = db.tickets.find((t) => t.id === req.params.id)
     if (!sourceTicket) return res.status(404).json({ error: 'Source ticket not found' })
 
-    const { targetTicketId, actor = 'staff' } = req.body
+    const { targetTicketId } = req.body || {}
     const targetTicket = db.tickets.find((t) => t.id === targetTicketId)
     if (!targetTicket) return res.status(404).json({ error: 'Target ticket not found' })
     if (sourceTicket.id === targetTicket.id) return res.status(400).json({ error: 'Cannot merge ticket into itself' })
@@ -884,7 +1201,7 @@ async function startServer() {
       id: `msg_merge_${Date.now()}`,
       from: 'system' as const,
       author: 'System',
-      body: `**Merged from ticket ${sourceTicket.id}** by ${actor}:\n\n> Subject: ${sourceTicket.subject}\n> Client: ${sourceTicket.contact.fullName} (${sourceTicket.contact.email})\n\n${sourceTicket.body}`,
+      body: `**Merged from ticket ${sourceTicket.id}** by ${req.user!.username}:\n\n> Subject: ${sourceTicket.subject}\n> Client: ${sourceTicket.contact.fullName} (${sourceTicket.contact.email})\n\n${sourceTicket.body}`,
       visibility: 'internal' as const,
       at: nowIso,
     }
@@ -903,7 +1220,7 @@ async function startServer() {
       id: `msg_closed_merge_${Date.now()}`,
       from: 'system',
       author: 'System',
-      body: `Ticket merged into **${targetTicketId}** by ${actor}. All subsequent communication is tracked there.`,
+      body: `Ticket merged into **${targetTicketId}** by ${req.user!.username}. All subsequent communication is tracked there.`,
       visibility: 'public',
       at: nowIso,
     })
@@ -913,15 +1230,16 @@ async function startServer() {
 
     saveDb(db)
     scheduleCloudPush()
-    logAudit(actor, 'staff', 'TICKET_MERGED', 'tickets', `Merged ticket ${sourceTicket.id} into ${targetTicketId}`, sourceTicket.id)
+    logAudit(req.user!.username, req.user!.role, 'TICKET_MERGED', 'tickets', `Merged ticket ${sourceTicket.id} into ${targetTicketId}`, sourceTicket.id, req.ip)
 
     res.json({ success: true, targetTicketId })
   })
 
-  // Agent Presence & Collision Detection heartbeat
-  app.post('/api/presence', (req, res) => {
-    const { ticketId, username, action = 'viewing' } = req.body
-    if (!ticketId || !username) return res.status(400).json({ error: 'ticketId and username required' })
+  // Agent Presence & Collision Detection heartbeat (staff only)
+  app.post('/api/presence', requireStaff, (req, res) => {
+    const { ticketId, action = 'viewing' } = req.body || {}
+    const username = req.user!.username
+    if (!ticketId) return res.status(400).json({ error: 'ticketId required' })
 
     const now = Date.now()
     if (!activePresence.has(ticketId)) {
@@ -947,7 +1265,7 @@ async function startServer() {
     res.json({ ticketId, activeViewers: viewers })
   })
 
-  app.get('/api/presence/:ticketId', (req, res) => {
+  app.get('/api/presence/:ticketId', requireStaff, (req, res) => {
     const ticketId = req.params.ticketId
     const now = Date.now()
     const ticketMap = activePresence.get(ticketId)
@@ -966,8 +1284,8 @@ async function startServer() {
     res.json({ ticketId, activeViewers: viewers })
   })
 
-  // Export Tickets to CSV / JSON
-  app.get('/api/tickets/export', (req, res) => {
+  // Export Tickets to CSV / JSON (global queue visibility required)
+  app.get('/api/tickets/export', requirePermission('tickets_view_all'), (req, res) => {
     const db = getDb()
     const format = req.query.format === 'csv' ? 'csv' : 'json'
     const status = req.query.status as string
@@ -1005,7 +1323,7 @@ async function startServer() {
   })
 
   // AI Smart Ticket Summarization
-  app.post('/api/ai/summarize-ticket', async (req, res) => {
+  app.post('/api/ai/summarize-ticket', requirePermission('tickets_reply'), async (req, res) => {
     const db = getDb()
     const { ticketId } = req.body
     const ticket = db.tickets.find((t) => t.id === ticketId)
@@ -1085,7 +1403,7 @@ ${threadText}`
   })
 
   // AI Smart Reply Suggestions
-  app.post('/api/ai/smart-replies', async (req, res) => {
+  app.post('/api/ai/smart-replies', requirePermission('tickets_reply'), async (req, res) => {
     const db = getDb()
     const { ticketId } = req.body
     const ticket = db.tickets.find((t) => t.id === ticketId)
@@ -1160,35 +1478,39 @@ ${threadText}`
      CANNED REPLIES API
      -------------------------------------------------------------------------- */
 
-  app.get('/api/canned-replies', (req, res) => {
+  app.get('/api/canned-replies', requireStaff, (req, res) => {
     const db = getDb()
     res.json(db.cannedReplies)
   })
 
-  app.post('/api/canned-replies', (req, res) => {
+  app.post('/api/canned-replies', requirePermission('canned_replies_manage'), (req, res) => {
     const db = getDb()
-    const { title, shortcut, category, body, tags = [], actor = 'admin' } = req.body
+    const { title, shortcut, category, body, tags = [] } = req.body || {}
+
+    if (!title || !shortcut || !body) {
+      return res.status(400).json({ error: 'Title, shortcut and body are required' })
+    }
 
     const newReply = {
-      id: `cr_${Date.now()}`,
+      id: newId('cr'),
       title,
       shortcut: shortcut.startsWith('/') ? shortcut : `/${shortcut}`,
       category: category || 'General',
       body,
       tags,
-      createdBy: actor,
+      createdBy: req.user!.username,
       updatedAt: new Date().toISOString(),
     }
 
     db.cannedReplies.unshift(newReply)
     saveDb(db)
     scheduleCloudPush()
-    logAudit(actor, 'staff', 'CANNED_REPLY_CREATED', 'tickets', `Created canned reply "${title}"`)
+    logAudit(req.user!.username, req.user!.role, 'CANNED_REPLY_CREATED', 'tickets', `Created canned reply "${title}"`, newReply.id, req.ip)
 
     res.status(201).json(newReply)
   })
 
-  app.put('/api/canned-replies/:id', (req, res) => {
+  app.put('/api/canned-replies/:id', requirePermission('canned_replies_manage'), (req, res) => {
     const db = getDb()
     const idx = db.cannedReplies.findIndex((c) => c.id === req.params.id)
     if (idx === -1) return res.status(404).json({ error: 'Canned reply not found' })
@@ -1203,7 +1525,7 @@ ${threadText}`
     res.json(db.cannedReplies[idx])
   })
 
-  app.delete('/api/canned-replies/:id', (req, res) => {
+  app.delete('/api/canned-replies/:id', requirePermission('canned_replies_manage'), (req, res) => {
     const db = getDb()
     db.cannedReplies = db.cannedReplies.filter((c) => c.id !== req.params.id)
     saveDb(db)
@@ -1215,15 +1537,15 @@ ${threadText}`
      KANBAN BOARDS API (Trello-like)
      -------------------------------------------------------------------------- */
 
-  app.get('/api/kanban/boards', (req, res) => {
+  app.get('/api/kanban/boards', requirePermission('kanban_view'), (req, res) => {
     const db = getDb()
     res.json(db.kanbanBoards)
   })
 
-  app.post('/api/kanban/boards', (req, res) => {
+  app.post('/api/kanban/boards', requirePermission('kanban_create_board'), (req, res) => {
     const db = getDb()
-    const { title, description, color, isFavorite } = req.body
-    const boardId = `board_${Date.now()}`
+    const { title, description, color, isFavorite } = req.body || {}
+    const boardId = newId('board')
 
     const newBoard = {
       id: boardId,
@@ -1234,33 +1556,34 @@ ${threadText}`
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString(),
       lists: [
-        { id: `list_${Date.now()}_1`, boardId, title: 'To Do', order: 0, cards: [] },
-        { id: `list_${Date.now()}_2`, boardId, title: 'In Progress', order: 1, cards: [] },
-        { id: `list_${Date.now()}_3`, boardId, title: 'Review', order: 2, cards: [] },
-        { id: `list_${Date.now()}_4`, boardId, title: 'Done', order: 3, cards: [] },
+        { id: newId('list'), boardId, title: 'To Do', order: 0, cards: [] },
+        { id: newId('list'), boardId, title: 'In Progress', order: 1, cards: [] },
+        { id: newId('list'), boardId, title: 'Review', order: 2, cards: [] },
+        { id: newId('list'), boardId, title: 'Done', order: 3, cards: [] },
       ],
     }
 
     db.kanbanBoards.push(newBoard)
     saveDb(db)
     scheduleCloudPush()
-    logAudit('staff', 'staff', 'KANBAN_BOARD_CREATED', 'kanban', `Created Kanban board "${title}"`, boardId)
+    logAudit(req.user!.username, req.user!.role, 'KANBAN_BOARD_CREATED', 'kanban', `Created Kanban board "${title}"`, boardId, req.ip)
 
     res.status(201).json(newBoard)
   })
 
-  app.put('/api/kanban/boards/:id', (req, res) => {
+  app.put('/api/kanban/boards/:id', requirePermission('kanban_edit_cards'), (req, res) => {
     const db = getDb()
     const board = db.kanbanBoards.find((b) => b.id === req.params.id)
     if (!board) return res.status(404).json({ error: 'Board not found' })
 
-    Object.assign(board, req.body, { updatedAt: new Date().toISOString() })
+    const { id, createdAt, ...safeUpdates } = req.body || {}
+    Object.assign(board, safeUpdates, { updatedAt: new Date().toISOString() })
     saveDb(db)
     scheduleCloudPush()
     res.json(board)
   })
 
-  app.delete('/api/kanban/boards/:id', (req, res) => {
+  app.delete('/api/kanban/boards/:id', requirePermission('kanban_delete_cards'), (req, res) => {
     const db = getDb()
     db.kanbanBoards = db.kanbanBoards.filter((b) => b.id !== req.params.id)
     saveDb(db)
@@ -1269,9 +1592,9 @@ ${threadText}`
   })
 
   // Card Operations
-  app.post('/api/kanban/cards', (req, res) => {
+  app.post('/api/kanban/cards', requirePermission('kanban_edit_cards'), (req, res) => {
     const db = getDb()
-    const { boardId, listId, title, description, labels = [], assignees = [], dueDate, ticketId } = req.body
+    const { boardId, listId, title, description, labels = [], assignees = [], dueDate, ticketId } = req.body || {}
 
     const board = db.kanbanBoards.find((b) => b.id === boardId)
     if (!board) return res.status(404).json({ error: 'Board not found' })
@@ -1279,7 +1602,7 @@ ${threadText}`
     const list = board.lists.find((l) => l.id === listId)
     if (!list) return res.status(404).json({ error: 'List not found' })
 
-    const cardId = `card_${Date.now()}`
+    const cardId = newId('card')
     const newCard: KanbanCard = {
       id: cardId,
       listId,
@@ -1304,12 +1627,12 @@ ${threadText}`
     scheduleCloudPush()
 
     void triggerWebhooks('kanban.card_created', { cardId, title, boardId, listId })
-    logAudit('staff', 'staff', 'KANBAN_CARD_CREATED', 'kanban', `Created card "${title}" in list ${list.title}`, cardId)
+    logAudit(req.user!.username, req.user!.role, 'KANBAN_CARD_CREATED', 'kanban', `Created card "${title}" in list ${list.title}`, cardId, req.ip)
 
     res.status(201).json(newCard)
   })
 
-  app.patch('/api/kanban/cards/:id', (req, res) => {
+  app.patch('/api/kanban/cards/:id', requirePermission('kanban_edit_cards'), (req, res) => {
     const db = getDb()
     let foundCard: KanbanCard | null = null
     let foundList: any = null
@@ -1365,7 +1688,7 @@ ${threadText}`
     res.json(foundCard)
   })
 
-  app.delete('/api/kanban/cards/:id', (req, res) => {
+  app.delete('/api/kanban/cards/:id', requirePermission('kanban_delete_cards'), (req, res) => {
     const db = getDb()
     for (const b of db.kanbanBoards) {
       for (const l of b.lists) {
@@ -1391,10 +1714,10 @@ ${threadText}`
     res.json(db.wikiSpaces)
   })
 
-  app.post('/api/wiki/spaces', (req, res) => {
+  app.post('/api/wiki/spaces', requirePermission('wiki_manage_spaces'), (req, res) => {
     const db = getDb()
-    const { name, key, description, icon, isPrivate } = req.body
-    const spaceId = `sp_${Date.now()}`
+    const { name, key, description, icon, isPrivate } = req.body || {}
+    const spaceId = newId('sp')
 
     const newSpace = {
       id: spaceId,
@@ -1409,21 +1732,27 @@ ${threadText}`
     db.wikiSpaces.push(newSpace)
     saveDb(db)
     scheduleCloudPush()
-    logAudit('staff', 'staff', 'WIKI_SPACE_CREATED', 'wiki', `Created Wiki space "${name}" [${key}]`, spaceId)
+    logAudit(req.user!.username, req.user!.role, 'WIKI_SPACE_CREATED', 'wiki', `Created Wiki space "${name}" [${key}]`, spaceId, req.ip)
 
     res.status(201).json(newSpace)
   })
 
+  // Wiki page reads: anonymous & clients see public pages only; staff see internal
+  // pages when their role grants wiki_view_internal.
   app.get('/api/wiki/pages', (req, res) => {
     const db = getDb()
     const { spaceId, search, visibility } = req.query
     let pages = [...db.wikiPages]
 
+    const user = req.user
+    const canSeeInternal = Boolean(user?.kind === 'staff' && user.permissions.wiki_view_internal)
+    if (!canSeeInternal) {
+      pages = pages.filter((p) => p.visibility === 'public')
+    } else if (visibility) {
+      pages = pages.filter((p) => p.visibility === visibility)
+    }
     if (spaceId) {
       pages = pages.filter((p) => p.spaceId === spaceId)
-    }
-    if (visibility) {
-      pages = pages.filter((p) => p.visibility === visibility)
     }
     if (search && typeof search === 'string') {
       const q = search.toLowerCase()
@@ -1433,12 +1762,13 @@ ${threadText}`
     res.json(pages)
   })
 
-  app.post('/api/wiki/pages', (req, res) => {
+  app.post('/api/wiki/pages', requirePermission('wiki_create_edit'), (req, res) => {
     const db = getDb()
-    const { spaceId, parentId = null, title, content, author = 'admin', visibility = 'internal' } = req.body
-    const pageId = `page_${Date.now()}`
+    const { spaceId, parentId = null, title, content, visibility = 'internal' } = req.body || {}
+    const pageId = newId('page')
     const nowIso = new Date().toISOString()
     const slug = title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '')
+    const author = req.user!.username
 
     const newPage: WikiPage = {
       id: pageId,
@@ -1453,7 +1783,7 @@ ${threadText}`
       unhelpfulVotes: 0,
       revisions: [
         {
-          id: `rev_${Date.now()}`,
+          id: newId('rev'),
           pageId,
           author,
           summary: 'Initial page creation',
@@ -1470,22 +1800,23 @@ ${threadText}`
     scheduleCloudPush()
 
     void triggerWebhooks('wiki.page_created', { pageId, title, spaceId, author })
-    logAudit(author, 'staff', 'WIKI_PAGE_CREATED', 'wiki', `Created Wiki page "${title}"`, pageId)
+    logAudit(req.user!.username, req.user!.role, 'WIKI_PAGE_CREATED', 'wiki', `Created Wiki page "${title}"`, pageId, req.ip)
 
     res.status(201).json(newPage)
   })
 
-  app.put('/api/wiki/pages/:id', (req, res) => {
+  app.put('/api/wiki/pages/:id', requirePermission('wiki_create_edit'), (req, res) => {
     const db = getDb()
     const page = db.wikiPages.find((p) => p.id === req.params.id)
     if (!page) return res.status(404).json({ error: 'Page not found' })
 
-    const { title, content, author = 'admin', summary = 'Updated page content', visibility } = req.body
+    const { title, content, summary = 'Updated page content', visibility } = req.body || {}
+    const author = req.user!.username
     const nowIso = new Date().toISOString()
 
     if (content && content !== page.content) {
       page.revisions.unshift({
-        id: `rev_${Date.now()}`,
+        id: newId('rev'),
         pageId: page.id,
         author,
         summary,
@@ -1508,21 +1839,21 @@ ${threadText}`
   })
 
   // Rollback to specific revision
-  app.post('/api/wiki/pages/:id/rollback', (req, res) => {
+  app.post('/api/wiki/pages/:id/rollback', requirePermission('wiki_create_edit'), (req, res) => {
     const db = getDb()
     const page = db.wikiPages.find((p) => p.id === req.params.id)
     if (!page) return res.status(404).json({ error: 'Page not found' })
 
-    const { revisionId, author = 'admin' } = req.body
+    const { revisionId } = req.body || {}
     const targetRev = page.revisions.find((r) => r.id === revisionId)
     if (!targetRev) return res.status(404).json({ error: 'Revision not found' })
 
     const nowIso = new Date().toISOString()
     page.content = targetRev.content
     page.revisions.unshift({
-      id: `rev_${Date.now()}`,
+      id: newId('rev'),
       pageId: page.id,
-      author,
+      author: req.user!.username,
       summary: `Restored version from ${targetRev.createdAt}`,
       content: targetRev.content,
       createdAt: nowIso,
@@ -1531,13 +1862,13 @@ ${threadText}`
 
     saveDb(db)
     scheduleCloudPush()
-    logAudit(author, 'staff', 'WIKI_PAGE_ROLLBACK', 'wiki', `Rolled back page "${page.title}" to ${revisionId}`, page.id)
+    logAudit(req.user!.username, req.user!.role, 'WIKI_PAGE_ROLLBACK', 'wiki', `Rolled back page "${page.title}" to ${revisionId}`, page.id, req.ip)
 
     res.json(page)
   })
 
-  // Helpful vote
-  app.post('/api/wiki/pages/:id/vote', (req, res) => {
+  // Helpful vote (public — customer-facing feedback widget)
+  app.post('/api/wiki/pages/:id/vote', rateLimit({ windowMs: 60 * 60_000, max: 60, key: 'wiki-vote' }), (req, res) => {
     const db = getDb()
     const page = db.wikiPages.find((p) => p.id === req.params.id)
     if (!page) return res.status(404).json({ error: 'Page not found' })
@@ -1551,89 +1882,144 @@ ${threadText}`
   })
 
   /* --------------------------------------------------------------------------
-     ADMIN & RBAC SETTINGS
+     ADMIN & RBAC SETTINGS (all server-side enforced per docs/RBAC_MATRIX.md)
      -------------------------------------------------------------------------- */
 
-  app.get('/api/admin/staff', (req, res) => {
+  // Sanitize staff records — password hashes must never leave the server
+  function sanitizeStaff(s: StaffMember) {
+    const { passwordHash, ...safe } = s
+    return safe
+  }
+
+  app.get('/api/admin/staff', requirePermission('admin_manage_staff'), (req, res) => {
     const db = getDb()
-    res.json(db.staff)
+    res.json(db.staff.map(sanitizeStaff))
   })
 
-  app.post('/api/admin/staff', (req, res) => {
+  app.post('/api/admin/staff', requirePermission('admin_manage_staff'), (req, res) => {
     const db = getDb()
-    const { username, displayName, role, team, email, telegramChatId } = req.body
+    const { username, displayName, role, team, email, telegramChatId, password } = req.body || {}
 
-    const newStaff = {
-      username: username.toLowerCase().trim(),
-      displayName,
+    if (!username || typeof username !== 'string') {
+      return res.status(400).json({ error: 'Username is required' })
+    }
+    const cleanUsername = username.toLowerCase().trim()
+    if (!/^[a-z0-9_.-]{2,32}$/.test(cleanUsername)) {
+      return res.status(400).json({ error: 'Username may only contain letters, numbers, dots, dashes and underscores (2-32 chars)' })
+    }
+    if (db.staff.some((s) => s.username === cleanUsername)) {
+      return res.status(409).json({ error: 'A staff member with this username already exists' })
+    }
+    if (password && !isStrongPassword(String(password))) {
+      return res.status(400).json({ error: 'Password must be at least 8 characters' })
+    }
+
+    const newStaff: StaffMember = {
+      username: cleanUsername,
+      displayName: displayName || cleanUsername,
       role: (role as StaffRole) || 'agent',
       team: (team as Team) || 'Support',
-      email: email || `${username}@ryzendesk.internal`,
+      email: email || `${cleanUsername}@ryzendesk.internal`,
       suspended: false,
       telegramChatId: telegramChatId ? Number(telegramChatId) : null,
       createdAt: new Date().toISOString(),
+    }
+    if (password) {
+      newStaff.passwordHash = hashPassword(String(password))
+      newStaff.mustChangePassword = true
     }
 
     db.staff.push(newStaff)
     saveDb(db)
     scheduleCloudPush()
-    logAudit('admin', 'super_admin', 'STAFF_ACCOUNT_CREATED', 'staff', `Added staff user ${username} (${role})`)
+    logAudit(req.user!.username, req.user!.role, 'STAFF_ACCOUNT_CREATED', 'staff', `Added staff user ${cleanUsername} (${newStaff.role})`, undefined, req.ip)
 
-    res.status(201).json(newStaff)
+    res.status(201).json(sanitizeStaff(newStaff))
   })
 
-  app.patch('/api/admin/staff/:username', (req, res) => {
+  app.patch('/api/admin/staff/:username', requirePermission('admin_manage_staff'), (req, res) => {
     const db = getDb()
     const staff = db.staff.find((s) => s.username === req.params.username.toLowerCase())
     if (!staff) return res.status(404).json({ error: 'Staff member not found' })
 
-    Object.assign(staff, req.body)
+    // Hardened field allowlist — passwordHash can never be set through this route
+    const { passwordHash, mustChangePassword, username: _ignored, createdAt: _created, ...updates } = req.body || {}
+
+    // Safety rails: protect the acting admin and the last super admin
+    if (typeof updates.role !== 'undefined' || typeof updates.suspended !== 'undefined') {
+      if (staff.username === req.user!.username) {
+        return res.status(400).json({ error: 'You cannot change your own role or suspension status' })
+      }
+      const demotingLastSuperAdmin =
+        staff.role === 'super_admin' &&
+        ((updates.role && updates.role !== 'super_admin') || updates.suspended === true) &&
+        db.staff.filter((s) => s.role === 'super_admin' && !s.suspended && s.username !== staff.username).length === 0
+      if (demotingLastSuperAdmin) {
+        return res.status(400).json({ error: 'Cannot demote or suspend the last active Super Admin' })
+      }
+    }
+
+    if (typeof updates.role !== 'undefined' && !['super_admin', 'team_lead', 'agent', 'viewer', 'client'].includes(updates.role)) {
+      return res.status(400).json({ error: 'Invalid role' })
+    }
+
+    Object.assign(staff, updates)
+
+    // Optional password provision/reset through the admin allowlist
+    if (typeof passwordHash === 'undefined' && req.body?.password) {
+      if (!isStrongPassword(String(req.body.password))) {
+        return res.status(400).json({ error: 'Password must be at least 8 characters' })
+      }
+      staff.passwordHash = hashPassword(String(req.body.password))
+      staff.mustChangePassword = true
+    }
+
     saveDb(db)
     scheduleCloudPush()
-    logAudit('admin', 'super_admin', 'STAFF_ACCOUNT_UPDATED', 'staff', `Updated staff account ${staff.username}`)
+    logAudit(req.user!.username, req.user!.role, 'STAFF_ACCOUNT_UPDATED', 'staff', `Updated staff account ${staff.username}`, undefined, req.ip)
 
-    res.json(staff)
+    res.json(sanitizeStaff(staff))
   })
 
-  // RBAC permissions matrix
-  app.get('/api/admin/rbac', (req, res) => {
+  // RBAC permissions matrix (readable by staff for UI gating; modification is Super Admin only)
+  app.get('/api/admin/rbac', requireStaff, (req, res) => {
     const db = getDb()
     res.json(db.settings.rbac || DEFAULT_RBAC)
   })
 
-  app.put('/api/admin/rbac', (req, res) => {
+  app.put('/api/admin/rbac', requirePermission('admin_manage_rbac'), (req, res) => {
     const db = getDb()
     db.settings.rbac = req.body
     saveDb(db)
     scheduleCloudPush()
-    logAudit('admin', 'super_admin', 'RBAC_MATRIX_UPDATED', 'rbac', 'Updated enterprise granular permissions matrix')
+    logAudit(req.user!.username, req.user!.role, 'RBAC_MATRIX_UPDATED', 'rbac', 'Updated enterprise granular permissions matrix', undefined, req.ip)
     res.json(db.settings.rbac)
   })
 
   // SLA policies
-  app.get('/api/admin/sla', (req, res) => {
+  app.get('/api/admin/sla', requireStaff, (req, res) => {
     const db = getDb()
     res.json(db.settings.slaPolicies || DEFAULT_SLA_POLICIES)
   })
 
-  app.put('/api/admin/sla', (req, res) => {
+  app.put('/api/admin/sla', requirePermission('sla_manage'), (req, res) => {
     const db = getDb()
     db.settings.slaPolicies = req.body
     saveDb(db)
     scheduleCloudPush()
-    logAudit('admin', 'super_admin', 'SLA_POLICIES_UPDATED', 'system', 'Updated system SLA policy parameters')
+    logAudit(req.user!.username, req.user!.role, 'SLA_POLICIES_UPDATED', 'system', 'Updated system SLA policy parameters', undefined, req.ip)
     res.json(db.settings.slaPolicies)
   })
 
-  // SMTP Settings & Test
-  app.get('/api/admin/smtp', (req, res) => {
+  // SMTP Settings & Test (SMTP Mailer Credentials — Super Admin per matrix)
+  app.get('/api/admin/smtp', requirePermission('admin_smtp'), (req, res) => {
     const db = getDb()
     const smtp = { ...db.settings.smtp }
     if (smtp.pass) smtp.pass = '••••••••••••'
     res.json({ smtp, logs: db.emailLogs.slice(0, 50) })
   })
 
-  app.put('/api/admin/smtp', (req, res) => {
+  app.put('/api/admin/smtp', requirePermission('admin_smtp'), (req, res) => {
     const db = getDb()
     const currentPass = db.settings.smtp.pass
     db.settings.smtp = {
@@ -1643,11 +2029,11 @@ ${threadText}`
     }
     saveDb(db)
     scheduleCloudPush()
-    logAudit('admin', 'super_admin', 'SMTP_CONFIG_UPDATED', 'smtp', `Updated SMTP host to ${db.settings.smtp.host}`)
+    logAudit(req.user!.username, req.user!.role, 'SMTP_CONFIG_UPDATED', 'smtp', `Updated SMTP host to ${db.settings.smtp.host}`, undefined, req.ip)
     res.json({ success: true, smtp: db.settings.smtp })
   })
 
-  app.post('/api/admin/smtp/test', async (req, res) => {
+  app.post('/api/admin/smtp/test', requirePermission('admin_smtp'), rateLimit({ windowMs: 60 * 60_000, max: 10, key: 'smtp-test-admin' }), async (req, res) => {
     const { targetEmail } = req.body
     try {
       const log = await sendEmailNotification({
@@ -1662,22 +2048,28 @@ ${threadText}`
     }
   })
 
-  // Webhooks
-  app.get('/api/admin/webhooks', (req, res) => {
+  // Webhooks (Configure Webhook Deliveries — Support Manager & Super Admin per matrix)
+  app.get('/api/admin/webhooks', requirePermission('admin_webhooks'), (req, res) => {
     const db = getDb()
     res.json({ webhooks: db.webhooks, deliveries: db.webhookDeliveries.slice(0, 50) })
   })
 
-  app.post('/api/admin/webhooks', (req, res) => {
+  app.post('/api/admin/webhooks', requirePermission('admin_webhooks'), (req, res) => {
     const db = getDb()
-    const { name, targetUrl, secret, events } = req.body
-    const whId = `wh_${Date.now()}`
+    const { name, targetUrl, secret, events } = req.body || {}
+
+    // SSRF protection: validate the target before it ever enters the database
+    const urlCheck = validateWebhookUrl(String(targetUrl || ''))
+    if (urlCheck.ok === false) {
+      return res.status(400).json({ error: urlCheck.error })
+    }
+    const whId = newId('wh')
 
     const newWebhook = {
       id: whId,
       name,
-      targetUrl,
-      secret: secret || `whsec_${Math.random().toString(36).substring(2, 12)}`,
+      targetUrl: urlCheck.normalized,
+      secret: secret || secureToken('whsec', 24),
       active: true,
       events: events || ['ticket.created', 'ticket.resolved'],
       createdAt: new Date().toISOString(),
@@ -1686,12 +2078,12 @@ ${threadText}`
     db.webhooks.push(newWebhook)
     saveDb(db)
     scheduleCloudPush()
-    logAudit('admin', 'super_admin', 'WEBHOOK_CREATED', 'webhooks', `Configured webhook ${name} for [${newWebhook.events.join(', ')}]`, whId)
+    logAudit(req.user!.username, req.user!.role, 'WEBHOOK_CREATED', 'webhooks', `Configured webhook ${name} for [${newWebhook.events.join(', ')}]`, whId, req.ip)
 
     res.status(201).json(newWebhook)
   })
 
-  app.delete('/api/admin/webhooks/:id', (req, res) => {
+  app.delete('/api/admin/webhooks/:id', requirePermission('admin_webhooks'), (req, res) => {
     const db = getDb()
     db.webhooks = db.webhooks.filter((w) => w.id !== req.params.id)
     saveDb(db)
@@ -1699,17 +2091,17 @@ ${threadText}`
     res.json({ success: true })
   })
 
-  app.post('/api/admin/webhooks/:id/test', async (req, res) => {
+  app.post('/api/admin/webhooks/:id/test', requirePermission('admin_webhooks'), rateLimit({ windowMs: 15 * 60_000, max: 20, key: 'webhook-test' }), async (req, res) => {
     try {
       const delivery = await testWebhookEndpoint(req.params.id)
-      res.json({ success: true, delivery })
+      res.json({ success: delivery.success, delivery })
     } catch (err) {
       res.status(500).json({ error: String(err) })
     }
   })
 
-  // Audit Logs
-  app.get('/api/admin/audit', (req, res) => {
+  // Audit Logs (Export Compliance Audit Logs — Support Manager & Super Admin per matrix)
+  app.get('/api/admin/audit', requirePermission('admin_view_audit'), (req, res) => {
     const db = getDb()
     const { module, actor, limit = 100 } = req.query
     let logs = [...db.audit]
@@ -1720,7 +2112,7 @@ ${threadText}`
     res.json(logs.slice(0, Number(limit)))
   })
 
-  app.get('/api/admin/audit/export', (req, res) => {
+  app.get('/api/admin/audit/export', requirePermission('admin_view_audit'), (req, res) => {
     const db = getDb()
     const headers = ['ID', 'Timestamp', 'Actor', 'Role', 'Action', 'Module', 'EntityID', 'Detail', 'IP']
     const rows = db.audit.map((l) => [
@@ -1740,8 +2132,8 @@ ${threadText}`
     res.send(csvContent)
   })
 
-  // Analytics Engine
-  app.get('/api/analytics', (req, res) => {
+  // Analytics Engine (analytics_view — staff roles; excluded for clients)
+  app.get('/api/analytics', requirePermission('analytics_view'), (req, res) => {
     const db = getDb()
     const tickets = db.tickets
 
@@ -1800,6 +2192,12 @@ ${threadText}`
      VITE MIDDLEWARE (DEV) / STATIC SERVE (PROD)
      ========================================================================== */
 
+  // Unknown API routes -> explicit 404 JSON (registered BEFORE the SPA catch-all
+  // so /api/* never leaks the frontend shell)
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ error: 'Not found' })
+  })
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1816,6 +2214,7 @@ ${threadText}`
 
   app.listen(PORT, '0.0.0.0', () => {
     console.log(`RyzenDesk Enterprise Server running on http://0.0.0.0:${PORT}`)
+    console.log(`Security: session auth + server-side RBAC enforcement ACTIVE (v2.4.0)`)
   })
 }
 

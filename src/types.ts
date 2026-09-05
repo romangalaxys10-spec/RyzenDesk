@@ -306,6 +306,7 @@ export interface RolePermissions {
   admin_webhooks: boolean
   admin_smtp: boolean
   admin_cloud_sync: boolean
+  admin_deploy: boolean
   analytics_view: boolean
 }
 
@@ -460,6 +461,16 @@ export interface InstallationConfig {
   geminiApiKey?: string
 }
 
+export interface SessionUser {
+  kind: 'staff' | 'client'
+  username: string
+  displayName: string
+  role: StaffRole
+  email: string
+  zaiId?: string
+  mustChangePassword?: boolean
+}
+
 export interface CloudSyncStatus {
   configured: boolean
   repo: string
@@ -468,6 +479,7 @@ export interface CloudSyncStatus {
   sha: string | null
   pendingChanges: boolean
   pushing: boolean
+  encrypted?: boolean
   isOnline: boolean
   lastSyncAt: string | null
   lastError: string | null

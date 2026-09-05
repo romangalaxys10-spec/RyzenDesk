@@ -3,6 +3,7 @@ import { I18nProvider } from './i18n/translations'
 import { useSyncManager, queueMutation } from './lib/sync'
 import { Sidebar } from './components/layout/Sidebar'
 import { Header } from './components/layout/Header'
+import { LoginScreen } from './components/auth/LoginScreen'
 import { TicketList } from './components/helpdesk/TicketList'
 import { TicketDetail } from './components/helpdesk/TicketDetail'
 import { TicketSubmitModal } from './components/helpdesk/TicketSubmitModal'
@@ -18,6 +19,7 @@ import { CommandPalette } from './components/common/CommandPalette'
 import { InstallationWizard } from './components/install/InstallationWizard'
 import type {
   Ticket,
+  SessionUser,
   KanbanBoard,
   KanbanCard,
   WikiSpace,
@@ -41,6 +43,10 @@ export function AppContent() {
   const [activeTab, setActiveTab] = useState<
     'tickets' | 'kanban' | 'wiki' | 'analytics' | 'admin' | 'portal'
   >('tickets')
+
+  // Session state — the authenticated identity comes from the server, never the client
+  const [authChecked, setAuthChecked] = useState(false)
+  const [sessionUser, setSessionUser] = useState<SessionUser | null>(null)
   const [currentRole, setCurrentRole] = useState<StaffRole>('super_admin')
   const [currentUsername, setCurrentUsername] = useState('roman')
 
@@ -148,6 +154,58 @@ export function AppContent() {
   useEffect(() => {
     void fetchAllData()
   }, [fetchAllData])
+
+  /* ==========================================================================
+     SESSION BOOTSTRAP & AUTH HANDLERS
+     ========================================================================== */
+
+  // Boot: resolve the current session before rendering the console
+  useEffect(() => {
+    let cancelled = false
+    const boot = async () => {
+      try {
+        const res = await fetch('/api/auth/me')
+        if (res.ok) {
+          const data = await res.json()
+          if (!cancelled && data.user) {
+            setSessionUser(data.user)
+            setCurrentRole(data.user.role)
+            setCurrentUsername(data.user.username)
+          }
+        }
+      } catch {
+        /* server unreachable — fall through to login */
+      } finally {
+        if (!cancelled) setAuthChecked(true)
+      }
+    }
+    void boot()
+    return () => {
+      cancelled = true
+    }
+  }, [])
+
+  const handleLoginSuccess = useCallback(
+    (user: SessionUser) => {
+      setSessionUser(user)
+      setCurrentRole(user.role)
+      setCurrentUsername(user.username)
+      setLoadingInitial(true)
+      void fetchAllData()
+    },
+    [fetchAllData]
+  )
+
+  const handleLogout = useCallback(async () => {
+    try {
+      await fetch('/api/auth/logout', { method: 'POST' })
+    } catch {
+      /* ignore network errors on logout */
+    }
+    setSessionUser(null)
+    setActiveTab('tickets')
+    setSelectedTicket(null)
+  }, [])
 
   /* ==========================================================================
      TICKET HANDLERS
@@ -685,6 +743,22 @@ export function AppContent() {
 
   const openTicketsCount = tickets.filter((t) => t.status === 'open' || t.status === 'in_progress').length
 
+  // Session gate — nothing renders until the server confirms who the user is
+  if (!authChecked) {
+    return (
+      <div className="min-h-screen bg-slate-100 flex items-center justify-center font-sans">
+        <div className="flex items-center gap-3 text-slate-500 text-sm">
+          <span className="w-2.5 h-2.5 rounded-full bg-indigo-500 animate-ping" />
+          Establishing secure session…
+        </div>
+      </div>
+    )
+  }
+
+  if (!sessionUser) {
+    return <LoginScreen onLogin={handleLoginSuccess} />
+  }
+
   return (
     <div className="min-h-screen bg-[#F8FAFC] text-slate-900 flex font-sans selection:bg-indigo-600 selection:text-white">
       {/* Deep Slate Left Sidebar (Desktop Persistent + Mobile Drawer) */}
@@ -701,8 +775,7 @@ export function AppContent() {
         pendingCount={syncManager.pendingCount}
         lastSyncTime={syncManager.lastSyncTime}
         onSyncNow={syncManager.triggerSync}
-        currentRole={currentRole}
-        setCurrentRole={setCurrentRole}
+        sessionUser={sessionUser}
         openTicketsCount={openTicketsCount}
         onOpenInstallWizard={() => setIsInstallWizardOpen(true)}
       />
@@ -719,8 +792,8 @@ export function AppContent() {
           isOnline={syncManager.isOnline}
           isSyncing={syncManager.isSyncing}
           onSyncNow={syncManager.triggerSync}
-          currentRole={currentRole}
-          setCurrentRole={setCurrentRole}
+          sessionUser={sessionUser}
+          onLogout={handleLogout}
           activeTab={activeTab}
           setActiveTab={(tab) => {
             setActiveTab(tab)

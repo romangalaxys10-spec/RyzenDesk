@@ -4,16 +4,17 @@
 
 **The Modern, Open-Source, Token-Based Customer Support & Helpdesk Platform**
 
-*Crafted with React 19, TypeScript, Express, Tailwind CSS, Recharts, and Git-backed persistence.*
+*Crafted with React 19, TypeScript, Express, Tailwind CSS, Recharts, and Git-backed persistence — secured with session auth, server-enforced RBAC, and AES-256 encrypted cloud sync.*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=flat-square)](LICENSE)
 [![TypeScript](https://img.shields.io/badge/TypeScript-5.8-3178C6.svg?style=flat-square&logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
 [![React 19](https://img.shields.io/badge/React-19.0-61DAFB.svg?style=flat-square&logo=react&logoColor=black)](https://react.dev/)
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-4.0-06B6D4.svg?style=flat-square&logo=tailwindcss&logoColor=white)](https://tailwindcss.com/)
 [![Docker](https://img.shields.io/badge/Docker-Ready-2496ED.svg?style=flat-square&logo=docker&logoColor=white)](Dockerfile)
+[![Security: Hardened](https://img.shields.io/badge/Security-RBAC%20%2B%20AES--256-emerald.svg?style=flat-square)](#-security-model)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg?style=flat-square)](CONTRIBUTING.md)
 
-[Features](#-key-features) • [Screenshots](#-screenshots) • [Quick Start](#-quick-start) • [Architecture](#-architecture) • [Deployment](#-deployment--github-sync) • [REST API](#-api-reference) • [Docs Hub](#-documentation-hub)
+[Features](#-key-features--productivity-suite) • [Screenshots](#-screenshots) • [Security](#-security-model) • [Quick Start](#-quick-start) • [Architecture](#-documentation-hub) • [REST API](#-api-reference) • [Docs Hub](#-documentation-hub)
 
 </div>
 
@@ -25,36 +26,69 @@
 
 Built around **token-based passwordless customer authentication**, customers submit and track tickets seamlessly using a unique secret token (`zt_...`), while agents and administrators leverage a **deep slate & indigo executive console** equipped with SLA breach prediction timers, Kanban sprint boards, multi-language internationalization (i18n), audit trails, webhook delivery pipelines, Telegram bot alerts, and transactional SMTP email notifications.
 
+**Every API request is authenticated and permission-checked on the server.** The RBAC matrix is not just UI decoration — it is enforced by middleware on all 50+ REST endpoints, staff passwords are scrypt-hashed, sessions use HMAC-signed HttpOnly cookies, webhook targets are SSRF-validated, and the Git-backed database snapshot is encrypted with AES-256-GCM before it ever leaves the server.
+
 ### 🌟 Why RyzenDesk?
 
-- 🔒 **Zero-Password Client Experience**: Customers submit tickets and receive an instant secret access token (`zt_...`) — no friction, no lost passwords.
+- 🔒 **Zero-Password Client Experience**: Customers submit tickets and receive an instant secret access token (`zt_...`) — no friction, no lost passwords. Tokens are stored as irreversible SHA-256 digests.
+- 🛡️ **Server-Enforced RBAC**: The 5-tier permission matrix is enforced by auth middleware on every endpoint — not just hidden in the UI.
 - ⏱️ **Real-Time SLA Engine**: Live countdown timers with dynamic color-coding (`Safe`, `Warning`, `Breached`) calculated against granular priority policies.
 - 📋 **Kanban & Sprint Management**: Drag-and-drop workflow columns with priority chips, assignee avatars, and sprint velocity tracking.
-- 📚 **Integrated Knowledge Wiki**: Multi-category markdown article authoring with helpfulness voting and instant keyword filtering.
+- 📚 **Integrated Knowledge Wiki**: Multi-category markdown article authoring with helpfulness voting, revision history, and instant keyword filtering.
 - 📊 **Executive Analytics Suite**: Real-time resolution metrics, category distributions, priority breakdowns, and agent leaderboards rendered via Recharts.
 - 🌐 **Global i18n Localization**: Instant client-side switching between **English (EN)**, **Spanish (ES)**, **German (DE)**, and **French (FR)**.
 - 🧙 **Self-Hosted Web Installation Wizard**: 6-step friendly web-based setup wizard guiding server administrators through pre-flight diagnostics, branding, storage engines, master admin security, and live service testing.
-- 🗄️ **Zero-Database Git Persistence**: State automatically persists to a single conflict-safe JSON store that syncs directly with private GitHub repositories.
+- 🗄️ **Zero-Database Git Persistence**: State automatically persists to a single conflict-safe JSON store — **AES-256-GCM encrypted** — that syncs directly with private GitHub repositories.
 - ⚡ **1-Click Full Codebase Deployer**: Automated deployment scripts push codebase updates directly to GitHub with secret masking.
 
 ---
 
 ## 📸 Screenshots
 
-| Customer Portal & Ticket Creation | Staff Executive Console & SLA Timers |
+| Secure Sign-In & Bootstrap Rotation | Staff Executive Console & SLA Timers |
 |:---:|:---:|
-| ![Ticket Submission](docs/screenshots/ui-home.png) | ![Staff Console](docs/screenshots/ui-staff-console.png) |
-| *Passwordless token submission & knowledge lookup* | *Real-time queue management & SLA breach counters* |
+| ![Login](docs/screenshots/ui-login.png) | ![Staff Console](docs/screenshots/ui-staff-console.png) |
+| *Session login + forced first-login password rotation* | *Real-time queue management, audit trail & SLA counters* |
 
-| Super-Admin CRM & RBAC Matrix | Interactive Ticket Thread & Internal Notes |
+| Interactive Ticket Thread & AI Copilot | First-Class Kanban Sprint Boards |
 |:---:|:---:|
-| ![Admin Panel](docs/screenshots/ui-admin-panel.png) | ![Ticket Thread](docs/screenshots/ui-ticket-thread.png) |
-| *Role permissions, webhook pipelines, and audit logs* | *Customer communications + private team notes* |
+| ![Ticket Thread](docs/screenshots/ui-ticket-thread.png) | ![Kanban](docs/screenshots/ui-kanban.png) |
+| *SLA compliance timers, escalation & Gemini AI assistant* | *Drag-and-drop boards linked to tickets* |
 
-| Real-Time Live Support Chat | First-Time Bootstrap Setup |
+| Knowledge Wiki with Revisions | Executive Analytics Suite |
 |:---:|:---:|
-| ![Live Chat Widget](docs/screenshots/ui-client-chat.png) | ![Setup Wizard](docs/screenshots/ui-setup-wizard.png) |
-| *Instant client messaging with admin toggle* | *Enforced first-login security & credential rotation* |
+| ![Wiki](docs/screenshots/ui-wiki.png) | ![Analytics](docs/screenshots/ui-analytics.png) |
+| *Spaces, revisions & internal/public visibility* | *Recharts dashboards & agent leaderboards* |
+
+| Granular RBAC Matrix (Server-Enforced) | 6-Step Installation Wizard |
+|:---:|:---:|
+| ![Admin Panel](docs/screenshots/ui-admin-panel.png) | ![Setup Wizard](docs/screenshots/ui-setup-wizard.png) |
+| *Permissions enforced by API middleware on every route* | *Pre-flight diagnostics before provisioning* |
+
+| Customer Self-Service Portal | Server Setup & Reconfiguration |
+|:---:|:---:|
+| ![Customer Portal](docs/screenshots/ui-home.png) | ![Password Bootstrap](docs/screenshots/ui-password-setup.png) |
+| *Token tracking, knowledge deflection & ticket submission* | *Cryptographic bootstrap lock & recovery receipt* |
+
+---
+
+## 🛡️ Security Model
+
+RyzenDesk treats security as a feature, not an afterthought. The full hardening specification lives in [`docs/SECURITY.md`](docs/SECURITY.md); the highlights:
+
+| Control | Implementation |
+|:---|:---|
+| **Authentication** | Session-based staff login + token-based customer login. HMAC-signed, HttpOnly, SameSite=Lax cookies; 24h sliding expiry; server-side session store (never synced to Git). |
+| **Password storage** | Node built-in **scrypt** with per-user salt; constant-time verification; mandatory rotation of bootstrap/admin-provisioned passwords. |
+| **Authorization** | **Every** `/api` route passes through `requireAuth` / `requirePermission(...)` middleware driven by the live RBAC matrix in the database. Clients are hard-scoped to their own tickets; internal notes are stripped from client responses. |
+| **Customer tokens** | `zt_...` tokens are generated from `crypto.randomBytes` (192-bit entropy) and stored **only as SHA-256 digests** — shown once at creation and emailed to the customer. |
+| **Webhooks (SSRF)** | Target URLs validated at creation **and** at every delivery: http/https only, no credentials, no redirects, DNS resolved and checked against loopback/private/link-local ranges (incl. cloud metadata `169.254.169.254`). |
+| **Cloud sync** | Database snapshots are encrypted with **AES-256-GCM** (key derived from `SESSION_SECRET`/`ENCRYPTION_KEY`) before being pushed to GitHub. Production refuses to push with default secrets. Legacy cleartext snapshots are transparently migrated on pull. |
+| **At-rest secrets** | SMTP password, Telegram bot token and the installation lock key are AES-256-GCM encrypted inside the JSON store; customer tokens are hashed. |
+| **Rate limiting** | Sliding-window limits on login, customer login, ticket creation, offline batch, install execution, and all API traffic. |
+| **CSRF & headers** | SameSite cookies + Origin validation on mutations; `X-Content-Type-Options`, `X-Frame-Options: DENY`, `Referrer-Policy`, `Permissions-Policy`, COOP, HSTS (over TLS) and a production CSP. |
+| **Sessions & install guard** | Logout invalidates server-side state; tampered cookies rejected. Installation wizard endpoints are public **only** during the first-run bootstrap window and require Super Admin afterwards. |
+| **Audit trail** | Security-relevant events (logins, password changes, staff/RBAC/SMTP/webhook changes, deployments, sync) are recorded with actor, role and source IP, exportable as CSV. |
 
 ---
 
@@ -96,7 +130,7 @@ Built around **token-based passwordless customer authentication**, customers sub
 - **Draggable Kanban Board**: HTML5 drag-and-drop workflow cards across custom board columns with team member avatars.
 - **6 Standard Categories**: Technical Issue, Billing, Feature Request, Account Access, Bug Report, and General Inquiry.
 - **Priority Matrix**: `Low`, `Medium`, `High`, and `Urgent` with auto-routing to designated functional teams.
-- **Internal Notes**: Collaborate privately within ticket threads without alerting external clients.
+- **Internal Notes**: Collaborate privately within ticket threads without alerting external clients — **never** exposed through client-authenticated API responses.
 - **File Attachments**: Drag-and-drop file attachment support with thumbnail previews and size validation.
 - **Canned Responses**: Quick insert pre-configured response macros via keyboard shortcuts or dropdown.
 
@@ -106,18 +140,18 @@ Built around **token-based passwordless customer authentication**, customers sub
 - Complete exportable compliance audit logs recording timestamps, actors, and state transitions.
 
 ### 🛡️ Role-Based Access Control (RBAC)
-- 5 distinct user privilege tiers:
-  - **Super Admin**: Full platform configuration, API keys, staff management, and system deployment.
-  - **Support Manager**: Team queues, SLA policy tuning, webhook dispatchers, and analytics export.
-  - **Senior Agent**: Escalation handling, ticket reassignment, and canned response authoring.
-  - **Support Agent**: Queue processing, customer replies, and private note authoring.
-  - **Customer / Client**: Ticket submission, thread tracking, and live chat engagement.
+- 5 distinct user privilege tiers, **enforced server-side on every endpoint** (see [RBAC Matrix](docs/RBAC_MATRIX.md)):
+  - **Super Admin**: Full platform configuration, API keys, staff management, RBAC matrix, and system deployment.
+  - **Support Manager (Team Lead)**: Team queues, SLA policy tuning, webhook dispatchers, and analytics export.
+  - **Senior/Support Agent**: Queue processing, customer replies, status updates, and private note authoring.
+  - **Viewer**: Read-only operational visibility.
+  - **Customer / Client**: Own-ticket submission, thread tracking, and knowledge base lookups.
 
 ### 🔌 Real-Time Integrations
 - **Telegram Bot**: Full bi-directional notifications via [@BotFather](https://t.me/BotFather) with `/link <token>` and `/staff` commands.
-- **SMTP Email Notifications**: Automated customer receipts and agent assignment alerts with TLS/STARTTLS support.
-- **Outgoing Webhooks**: HMAC SHA-256 signed event dispatching for `ticket.created`, `ticket.updated`, and `ticket.resolved`.
-- **GitHub Cloud Sync**: Auto-commits database mutations to private repositories with conflict-safe SHA resolution.
+- **SMTP Email Notifications**: Automated customer receipts and agent assignment alerts with TLS/STARTTLS support (credentials encrypted at rest).
+- **Outgoing Webhooks**: HMAC SHA-256 signed event dispatching for `ticket.created`, `ticket.updated`, and `ticket.resolved` with SSRF target validation.
+- **GitHub Cloud Sync**: Auto-commits AES-256-GCM encrypted database snapshots to private repositories with conflict-safe SHA resolution.
 
 ---
 
@@ -130,7 +164,7 @@ Built around **token-based passwordless customer authentication**, customers sub
 git clone https://github.com/romangalaxys10-spec/RyzenDesk.git
 cd RyzenDesk
 
-# 2. Copy environment variables
+# 2. Copy environment variables & set a strong SESSION_SECRET
 cp .env.example .env
 
 # 3. Launch with Docker Compose
@@ -138,6 +172,8 @@ docker compose up -d
 ```
 
 Access the application at **`http://localhost:3000`**.
+
+> The container runs as a non-root user, stores persistent state in the `ryzendesk-data` volume, and exposes a healthcheck on the public `/api/health` endpoint.
 
 ---
 
@@ -149,7 +185,7 @@ git clone https://github.com/romangalaxys10-spec/RyzenDesk.git
 cd RyzenDesk
 npm install
 
-# 2. Configure environment
+# 2. Configure environment (set SESSION_SECRET!)
 cp .env.example .env
 
 # 3. Start development server
@@ -168,7 +204,13 @@ RyzenDesk boots with a pre-configured, bootstrap Super Admin account. On first l
 |:---|:---|:---|:---|
 | **Super Admin** | `admin` | `RyzenAdmin@2026` | **Mandatory password update on initial login** |
 
-> ⚠️ **Production Security Notice**: Always change the default bootstrap password and set a cryptographically random `SESSION_SECRET` in your `.env` before public deployment.
+The sign-in flow:
+
+1. Open the console — you are greeted by the **session login screen** (staff or customer tabs).
+2. Sign in with the bootstrap credentials — the platform immediately forces a **password rotation** before any administrative API is reachable.
+3. Optionally run the **Server Setup Wizard** (sidebar) to provision organization branding, storage engine, SMTP and integrations.
+
+> ⚠️ **Production Security Notice**: Always change the default bootstrap password and set a cryptographically random `SESSION_SECRET` in your `.env` before public deployment. Production instances **refuse to push cloud-sync snapshots** until a real secret is configured.
 
 ---
 
@@ -178,14 +220,15 @@ Configuration is managed via `.env`. A complete template is provided in [`.env.e
 
 | Variable | Required | Default | Description |
 |:---|:---:|:---|:---|
-| `SESSION_SECRET` | **Yes** | `dev-fallback` | HMAC secret for session cookies and token encryption |
+| `SESSION_SECRET` | **Yes (prod)** | `dev-fallback` | HMAC secret for session cookies, at-rest secret encryption and cloud-sync envelope encryption. **Required in production.** |
+| `ENCRYPTION_KEY` | No | falls back to `SESSION_SECRET` | Dedicated key for AES-256-GCM cloud-sync + at-rest secret encryption. |
 | `PORT` | No | `3000` | Server listening port |
 | `SUPERADMIN_USERNAME` | No | `admin` | Initial bootstrap administrator username |
-| `SUPERADMIN_PASSWORD` | No | `RyzenAdmin@2026` | Initial bootstrap password |
+| `SUPERADMIN_PASSWORD` | No | `RyzenAdmin@2026` | Initial bootstrap password (rotation enforced on first login) |
 | `GITHUB_TOKEN` | No | `—` | GitHub Personal Access Token (PAT) for cloud storage sync |
 | `GITHUB_REPO` | No | `romangalaxys10-spec/RyzenDesk` | GitHub repository target (`owner/repo`) |
 | `GITHUB_BRANCH` | No | `main` | Branch for cloud database synchronization |
-| `GITHUB_DB_PATH` | No | `data/helpdesk-db.json` | Path inside the repository for the JSON database |
+| `GITHUB_DB_PATH` | No | `data/helpdesk-db.json` | Path inside the repository for the encrypted JSON database |
 | `TELEGRAM_BOT_TOKEN` | No | `—` | Bot token provided by Telegram [@BotFather](https://t.me/BotFather) |
 | `SMTP_HOST` | No | `—` | Outgoing SMTP mail server hostname |
 | `SMTP_PORT` | No | `587` | Outgoing SMTP port (587 for TLS, 465 for SSL) |
@@ -205,7 +248,7 @@ RyzenDesk includes built-in tools to push all codebase updates directly to GitHu
 npm run deploy
 
 # Push with a custom release message
-npm run deploy -- --message="feat: v2.1 production release"
+npm run deploy -- --message="feat: v2.4 production release"
 
 # Or execute the shell script directly
 ./scripts/deploy.sh
@@ -216,27 +259,65 @@ npm run deploy -- --message="feat: v2.1 production release"
 2. Click **Deploy Updates to GitHub**.
 3. View the live deployment status and commit hash confirmation in real time.
 
+> 🔐 The JSON **database** that syncs to GitHub is always wrapped in an AES-256-GCM encryption envelope (`ryzendesk-encrypted-db` format). The repository never receives ticket data, customer tokens, password hashes or SMTP credentials in plaintext.
+
 ---
 
 ## 📡 API Reference
 
-All features are accessible via standard JSON REST endpoints:
+All features are accessible via standard JSON REST endpoints. **Unless marked Public, every endpoint requires a session cookie** (staff or customer) and the corresponding RBAC permission — enforced in `server/auth.ts` middleware.
 
+### Authentication
 | Endpoint | Method | Auth | Description |
 |:---|:---:|:---:|:---|
-| `/api/tickets` | `POST` | Public | Submit new ticket; returns Ticket ID & secret token |
-| `/api/tickets` | `GET` | Staff | Fetch list of all active tickets |
-| `/api/tickets/:id` | `GET` | Session | Retrieve complete ticket thread and metadata |
-| `/api/tickets/:id` | `PATCH` | Staff | Update ticket status, priority, assignee, or team |
-| `/api/tickets/:id/messages` | `POST` | Session | Add public reply or private staff note |
-| `/api/tickets/:id/escalate` | `POST` | Staff | Escalate ticket to higher tier with alert dispatch |
-| `/api/chats` | `GET` / `POST` | Session | Retrieve or initialize real-time live support chat |
-| `/api/chats/:id/messages` | `POST` | Session | Send live chat message to support agent |
-| `/api/admin/staff` | `GET` / `POST` | Admin | Manage staff roster, roles, and status |
-| `/api/admin/webhooks` | `GET` / `POST` | Admin | Configure webhook endpoints and event triggers |
-| `/api/admin/deploy-codebase` | `POST` | Admin | Trigger full codebase commit and push to GitHub |
-| `/api/sync/push` | `POST` | Staff | Force push local JSON database to GitHub |
-| `/api/sync/pull` | `POST` | Staff | Force pull latest JSON database state from GitHub |
+| `/api/auth/login` | `POST` | Public (rate-limited) | Staff sign-in; sets signed HttpOnly session cookie |
+| `/api/auth/customer-login` | `POST` | Public (rate-limited) | Customer sign-in with email + `zt_...` secret token |
+| `/api/auth/me` | `GET` | Session | Current session profile + effective permissions |
+| `/api/auth/change-password` | `POST` | Session | Rotate password (enforced on first login) |
+| `/api/auth/logout` | `POST` | Session | Destroy session server-side |
+
+### Tickets & Productivity
+| Endpoint | Method | Auth | Description |
+|:---|:---:|:---:|:---|
+| `/api/tickets` | `POST` | Public (rate-limited) | Submit new ticket; returns Ticket ID & one-time secret token |
+| `/api/tickets` | `GET` | Staff (`tickets_view_all`) / Client (own scope) | Fetch ticket queue |
+| `/api/tickets/:id` | `GET` | Staff or ticket owner | Retrieve complete ticket thread (internal notes stripped for clients) |
+| `/api/tickets/:id` | `PATCH` | `tickets_edit_status` (+`tickets_assign`) | Update ticket status, priority, assignee, or team |
+| `/api/tickets/:id/messages` | `POST` | `tickets_reply` | Add public reply or private staff note |
+| `/api/tickets/:id/escalate` | `POST` | `tickets_escalate` | Escalate ticket to higher tier with alert dispatch |
+| `/api/tickets/bulk` | `POST` | `tickets_edit_status` | Bulk status/priority/assignment/tag operations |
+| `/api/tickets/:id/timelogs` | `POST` | `tickets_reply` | Log billable time entries |
+| `/api/tickets/:id/csat` | `POST` | Ticket owner or staff | Submit CSAT rating |
+| `/api/tickets/:id/link` / `merge` | `POST` | `tickets_edit_status` | Link or merge related tickets |
+| `/api/tickets/export` | `GET` | `tickets_view_all` | CSV/JSON export |
+| `/api/ai/summarize-ticket` | `POST` | `tickets_reply` | Gemini thread summarization (heuristic fallback) |
+| `/api/ai/smart-replies` | `POST` | `tickets_reply` | AI-drafted response suggestions |
+
+### Knowledge, Boards & Analytics
+| Endpoint | Method | Auth | Description |
+|:---|:---:|:---:|:---|
+| `/api/wiki/pages` | `GET` | Public (public pages) / Staff (internal) | Knowledge base |
+| `/api/wiki/pages` | `POST` / `PUT` | `wiki_create_edit` | Author / update articles (revisioned) |
+| `/api/wiki/spaces` | `POST` | `wiki_manage_spaces` | Create wiki spaces |
+| `/api/kanban/boards` | `GET` / `POST` | `kanban_view` / `kanban_create_board` | Boards CRUD |
+| `/api/kanban/cards` | `POST` / `PATCH` / `DELETE` | `kanban_edit_cards` / `kanban_delete_cards` | Card operations |
+| `/api/analytics` | `GET` | `analytics_view` | Executive metrics |
+| `/api/canned-replies` | `GET` / `POST` / `PUT` / `DELETE` | Staff / `canned_replies_manage` | Response macros |
+
+### Administration & System
+| Endpoint | Method | Auth | Description |
+|:---|:---:|:---:|:---|
+| `/api/admin/staff` | `GET` / `POST` / `PATCH` | `admin_manage_staff` | Manage staff roster, roles, and status (hashes never leave the server) |
+| `/api/admin/rbac` | `GET` / `PUT` | Staff / `admin_manage_rbac` | View or modify the live permission matrix |
+| `/api/admin/sla` | `GET` / `PUT` | Staff / `sla_manage` | SLA policy parameters |
+| `/api/admin/smtp` | `GET` / `PUT` / `test` | `admin_smtp` | SMTP settings (masked) & test dispatch |
+| `/api/admin/webhooks` | `GET` / `POST` / `DELETE` / `test` | `admin_webhooks` | Webhook pipelines (SSRF-validated targets) |
+| `/api/admin/audit` | `GET` / `export` | `admin_view_audit` | Compliance audit log |
+| `/api/sync/push` / `pull` | `POST` | `admin_cloud_sync` | Encrypted database snapshot sync |
+| `/api/admin/deploy-codebase` | `POST` | `admin_deploy` | Trigger full codebase commit and push to GitHub |
+| `/api/install/preflight` / `status` | `GET` | Public pre-install / Super Admin after | Installation wizard diagnostics & state |
+| `/api/install/execute` / `reset` | `POST` | Public bootstrap window / Super Admin after | Provision or reset the installation |
+| `/api/health` | `GET` | Public | Liveness probe |
 
 ---
 
@@ -244,6 +325,7 @@ All features are accessible via standard JSON REST endpoints:
 
 Deep-dive guides are available in the [`docs/`](docs/) directory:
 
+- 🛡️ **[Security Model](docs/SECURITY.md)**: Hardening controls, threat-model mapping and verification evidence.
 - 🏛️ **[System Architecture](docs/ARCHITECTURE.md)**: Architectural diagrams, state machine flows, and storage mechanics.
 - 📖 **[REST API Specification](docs/API.md)**: Comprehensive request/response schema documentation.
 - 🚀 **[Production Deployment Guide](docs/DEPLOYMENT.md)**: Docker, Cloud Run, VPS, and CI/CD pipelines.
@@ -261,8 +343,9 @@ Deep-dive guides are available in the [`docs/`](docs/) directory:
 - **Data Visualization**: [Recharts](https://recharts.org/)
 - **Animations**: [Motion](https://motion.dev/)
 - **Backend Server**: [Express 4](https://expressjs.com/) with native TypeScript execution via [tsx](https://github.com/privatenumber/tsx)
-- **Persistence Engine**: Git-backed zero-infrastructure JSON store + GitHub API synchronization
-- **Containerization**: [Docker](https://www.docker.com/) & Docker Compose
+- **Persistence Engine**: Git-backed zero-infrastructure JSON store + GitHub API synchronization (AES-256-GCM encrypted)
+- **Cryptography**: Node built-in `crypto` — scrypt password hashing, HMAC-signed sessions, SHA-256 token digests, AES-256-GCM envelopes
+- **Containerization**: [Docker](https://www.docker.com/) & Docker Compose (non-root runtime, healthchecked)
 
 ---
 

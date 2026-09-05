@@ -6,6 +6,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.4.0] - 2026-09-06
+
+### 🛡️ Security Hardening Release (Full External Audit Remediation)
+
+#### 🔐 Authentication & Session Model (now actually implemented)
+- **Staff Session Auth**: `POST /api/auth/login` with scrypt-hashed passwords, HMAC-signed HttpOnly session cookies (24h sliding expiry), server-side session store excluded from Git, logout invalidation and tamper rejection.
+- **Customer Token Auth**: `POST /api/auth/customer-login` (email + `zt_...` secret); customer sessions are hard-scoped to their own tickets.
+- **Forced Password Rotation**: bootstrap/admin-provisioned passwords block all API access until changed (`PASSWORD_CHANGE_REQUIRED`).
+- **Bootstrap admin provisioning**: first boot now creates a real scrypt password hash for the documented default admin.
+
+#### 🧾 Server-Side RBAC Enforcement
+- Every API route now passes authentication + granular permission middleware driven by the live matrix (`db.settings.rbac`): tickets, kanban, wiki, canned replies, analytics, staff, RBAC, SLA, SMTP, webhooks, audit, cloud sync and codebase deployment.
+- Customer responses never include internal notes or time logs; clients cannot author internal notes.
+- Staff API responses are sanitized (password hashes never leave the server); self-demotion and last-super-admin lockout protection; role/PATCH field allowlists.
+
+#### 🔑 Cryptographic Hardening
+- All security tokens (`zt_...` customer tokens, webhook secrets, installation lock key, session ids) now use `crypto.randomBytes` instead of `Math.random()`.
+- Customer tokens are stored only as SHA-256 digests (shown once at creation + emailed).
+- New `server/auth.ts` security core (scrypt hashing, sessions, RBAC, CSRF guard, rate limiting).
+
+#### 🌐 SSRF Protection (Webhooks)
+- Webhook targets validated at creation and on every delivery: http/https only, no credentials, no redirects, DNS resolution checked against loopback/private/link-local/CGNAT/metadata ranges.
+
+#### ☁️ Encrypted Cloud Sync & At-Rest Secrets
+- GitHub-synced database snapshots are wrapped in AES-256-GCM envelopes; production refuses to push with default secrets; legacy cleartext snapshots migrate transparently on pull.
+- SMTP password, Telegram bot token and installation lock key are AES-256-GCM encrypted inside the JSON store.
+- Demo SMTP credential placeholder removed from the seed database.
+
+#### 🚦 Transport & Abuse Controls
+- Security headers: nosniff, frame-deny, referrer policy, permissions policy, COOP, HSTS over TLS and a production Content-Security-Policy.
+- Sliding-window rate limits on login, customer login, ticket creation, offline batch, installation, SMTP/AI testers, webhook tests, wiki votes and global API traffic.
+- CSRF origin validation on all mutating requests.
+
+#### 🐳 Container & Dependencies
+- Dockerfile rewritten for the actual Vite + Express stack (was a broken Next.js template): multi-stage Node 22 alpine build, non-root runtime, HEALTHCHECK on public `/api/health`.
+- `npm audit` reduced to **0 vulnerabilities** (qs/body-parser overrides).
+
+#### 🧪 QA & Documentation
+- 81-check API security regression suite (auth matrix, RBAC roles, client scoping, SSRF vectors, rate limits, CSRF, session lifecycle) — all passing.
+- Encryption verification suite (round-trip, wrong-key, tamper detection) — all passing.
+- New `docs/SECURITY.md`; rewritten `docs/API.md` and `docs/RBAC_MATRIX.md`; README updated with the real security model and fresh screenshots of the current UI.
+- Fixed `src/App.tsx` syntax error that broke the frontend build.
+
+
 ## [2.3.0] - 2026-09-05
 
 ### 🚀 Added (Self-Hosted Server Installation Wizard & Deployment Engine)

@@ -2,6 +2,17 @@
 
 RyzenDesk features an enterprise security model with 5 distinct roles and granular permission controls.
 
+> **Server-side enforcement**: This matrix is not cosmetic. Every REST endpoint validates the caller's session and checks the corresponding permission from the live matrix (stored in `db.settings.rbac`) before processing the request. The Admin Console edits take effect immediately without a restart.
+
+---
+
+## 🔐 How Enforcement Works
+
+1. The caller presents a signed session cookie (`ryzendesk_session`) issued by `/api/auth/login` (staff) or `/api/auth/customer-login` (customer).
+2. Middleware resolves the session → account → role → permission set on **every request**.
+3. Routes declare the permission they require (`requirePermission('tickets_assign')`, etc.). Missing permissions produce `403 {"code":"FORBIDDEN","permission":"..."}`.
+4. Customer sessions are additionally **hard-scoped** to their own tickets; internal notes and time logs are stripped from their responses.
+
 ---
 
 ## 👥 Role Definitions
@@ -39,23 +50,26 @@ RyzenDesk features an enterprise security model with 5 distinct roles and granul
 | **Modify RBAC Matrix** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **Deploy Codebase to GitHub** | ✅ | ❌ | ❌ | ❌ | ❌ |
 | **SMTP Mailer Credentials** | ✅ | ❌ | ❌ | ❌ | ❌ |
+| **Cloud Sync Push/Pull (encrypted)** | ✅ | ❌ | ❌ | ❌ | ❌ |
 
 ---
 
 ## 🔍 Audit Trail Specification
 
-All security-sensitive operations generate immutable audit events recorded in `auditLogs`:
+All security-sensitive operations generate immutable audit events recorded in the `audit` collection: staff/customer logins, password rotations, staff account lifecycle, RBAC matrix edits, SLA/SMTP/webhook configuration, encrypted cloud sync pushes, codebase deployments and installation events.
 
 ```json
 {
-  "id": "audit_827f31a",
-  "timestamp": "2026-09-04T14:31:51.000Z",
-  "actorId": "usr_superadmin",
-  "actorName": "System Administrator",
-  "actorRole": "superadmin",
-  "action": "deploy_codebase",
+  "id": "aud_1757094012345_8f3a91c2",
+  "at": "2026-09-05T14:31:51.000Z",
+  "actor": "admin",
+  "actorRole": "super_admin",
+  "action": "CODEBASE_DEPLOYED",
   "module": "system",
-  "details": "Triggered full codebase push to GitHub repository romangalaxys10-spec/RyzenDesk",
-  "ipAddress": "127.0.0.1"
+  "entityId": null,
+  "detail": "Full codebase deployment triggered from 203.0.113.7",
+  "ip": "203.0.113.7"
 }
 ```
+
+Audit reads and the CSV export require the `admin_view_audit` permission (Super Admin & Support Manager).

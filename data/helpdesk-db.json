@@ -1,7 +1,7 @@
 {
   "meta": {
     "version": 3,
-    "updatedAt": "2026-09-05T08:59:43.848Z",
+    "updatedAt": "2026-09-05T17:44:37.911Z",
     "ticketCounter": 104
   },
   "settings": {
@@ -10,10 +10,10 @@
       "host": "smtp.sendgrid.net",
       "port": 587,
       "user": "apikey",
-      "pass": "SG.demo_key_ryzendesk_notifications",
+      "pass": "",
       "from": "notifications@ryzendesk.internal",
       "secure": false,
-      "enabled": true
+      "enabled": false
     },
     "telegram": {
       "botToken": "",
@@ -72,7 +72,8 @@
         "admin_webhooks": true,
         "admin_smtp": true,
         "admin_cloud_sync": true,
-        "analytics_view": true
+        "analytics_view": true,
+        "admin_deploy": true
       },
       "team_lead": {
         "tickets_create": true,
@@ -100,7 +101,8 @@
         "admin_webhooks": false,
         "admin_smtp": false,
         "admin_cloud_sync": false,
-        "analytics_view": true
+        "analytics_view": true,
+        "admin_deploy": false
       },
       "agent": {
         "tickets_create": true,
@@ -108,8 +110,8 @@
         "tickets_reply": true,
         "tickets_internal_note": true,
         "tickets_edit_status": true,
-        "tickets_assign": true,
-        "tickets_escalate": true,
+        "tickets_assign": false,
+        "tickets_escalate": false,
         "tickets_delete": false,
         "canned_replies_manage": false,
         "sla_manage": false,
@@ -119,7 +121,7 @@
         "kanban_delete_cards": false,
         "wiki_view_public": true,
         "wiki_view_internal": true,
-        "wiki_create_edit": true,
+        "wiki_create_edit": false,
         "wiki_manage_spaces": false,
         "wiki_delete": false,
         "admin_manage_staff": false,
@@ -128,7 +130,8 @@
         "admin_webhooks": false,
         "admin_smtp": false,
         "admin_cloud_sync": false,
-        "analytics_view": true
+        "analytics_view": true,
+        "admin_deploy": false
       },
       "viewer": {
         "tickets_create": false,
@@ -156,7 +159,8 @@
         "admin_webhooks": false,
         "admin_smtp": false,
         "admin_cloud_sync": false,
-        "analytics_view": true
+        "analytics_view": true,
+        "admin_deploy": false
       },
       "client": {
         "tickets_create": true,
@@ -184,8 +188,25 @@
         "admin_webhooks": false,
         "admin_smtp": false,
         "admin_cloud_sync": false,
-        "analytics_view": false
+        "analytics_view": false,
+        "admin_deploy": false
       }
+    },
+    "installation": {
+      "installed": true,
+      "installedAt": "2026-09-04T12:00:00.000Z",
+      "organizationName": "Ryzen Technologies Enterprise",
+      "helpdeskName": "RyzenDesk Support Portal",
+      "supportEmail": "support@ryzendesk.internal",
+      "baseUrl": "http://localhost:3000",
+      "defaultLanguage": "en",
+      "timezone": "UTC",
+      "storageEngine": "atomic_json_engine",
+      "seededDemoData": true,
+      "backupEnabled": true,
+      "adminCreated": true,
+      "installationLockKey": "",
+      "version": "2.4.0"
     }
   },
   "users": [
@@ -193,7 +214,7 @@
       "zaiId": "usr_sarah",
       "fullName": "Sarah Jenkins",
       "email": "sarah.j@acmecorp.io",
-      "token": "zt_acme_83921",
+      "token": "sha256:443692af0c81b83fa4d64481712b69ea6cc6789a6b565840bf9e25b4e8b4a3ae",
       "telegramChatId": null,
       "createdAt": "2026-09-03T14:19:53.272Z",
       "updatedAt": "2026-09-03T14:19:53.272Z",
@@ -203,7 +224,7 @@
       "zaiId": "usr_marcus",
       "fullName": "Marcus Vance",
       "email": "mvance@fintech-global.com",
-      "token": "zt_fin_44021",
+      "token": "sha256:c9d8b2c7d088db9b156840d2121731b2a1c5223c3fb5e6a8ac45c40807e460fd",
       "telegramChatId": null,
       "createdAt": "2026-09-03T14:19:53.272Z",
       "updatedAt": "2026-09-03T14:19:53.272Z",
@@ -794,9 +815,10 @@
       "team": "Support",
       "email": "admin@ryzendesk.internal",
       "suspended": false,
-      "mustChangePassword": false,
+      "mustChangePassword": true,
       "telegramChatId": 100128931,
-      "createdAt": "2026-09-03T14:19:53.272Z"
+      "createdAt": "2026-09-03T14:19:53.272Z",
+      "passwordHash": "scrypt$4223860d7e37de294f1979dbcb246fee$136f2ba2f6a5343a0ac99910642fde022858fd9c994fd3011988c94977ce381fff659cbcd39cd345a8090ed4d576358598ab6f3f176fecef16b07093a56d5eb0"
     },
     {
       "username": "roman",

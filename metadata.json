@@ -1,6 +1,8 @@
 {
   "name": "RyzenDesk",
-  "description": "Enterprise Helpdesk, Trello-style Kanban Boards, and Confluence-style Wiki with Email/Telegram, SLA timers, Canned replies, i18n, RBAC, Webhooks, self-hosted Server Installation Wizard, and offline-first cloud sync.",
+  "description": "Enterprise Helpdesk, Trello-style Kanban Boards, and Confluence-style Wiki with session auth + server-enforced RBAC, AES-256 encrypted Git cloud sync, Email/Telegram, SLA timers, Canned replies, i18n, SSRF-guarded Webhooks, self-hosted Server Installation Wizard, and offline-first cloud sync.",
   "requestFramePermissions": [],
-  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
 }

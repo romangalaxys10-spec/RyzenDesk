@@ -8,9 +8,10 @@ import {
   Check,
   AlertTriangle,
   Server,
+  LogOut,
 } from 'lucide-react'
 import { useI18n, SUPPORTED_LANGUAGES, type Language } from '../../i18n/translations'
-import type { StaffRole } from '../../types'
+import type { SessionUser } from '../../types'
 
 interface HeaderProps {
   onOpenMobileMenu: () => void
@@ -18,8 +19,8 @@ interface HeaderProps {
   isOnline: boolean
   isSyncing: boolean
   onSyncNow: () => void
-  currentRole: StaffRole
-  setCurrentRole: (role: StaffRole) => void
+  sessionUser: SessionUser
+  onLogout: () => void
   activeTab: string
   setActiveTab: (tab: any) => void
   breachedCount: number
@@ -34,7 +35,8 @@ export const Header: React.FC<HeaderProps> = ({
   isOnline,
   isSyncing,
   onSyncNow,
-  currentRole,
+  sessionUser,
+  onLogout,
   activeTab,
   setActiveTab,
   breachedCount,
@@ -48,23 +50,18 @@ export const Header: React.FC<HeaderProps> = ({
   // Primary languages to show in the compact segment control
   const primaryLangs: Language[] = ['en', 'es', 'de', 'fr']
 
-  // Role initials
-  const getRoleInitials = (role: StaffRole) => {
-    switch (role) {
-      case 'super_admin':
-        return 'SA'
-      case 'team_lead':
-        return 'TL'
-      case 'agent':
-        return 'AG'
-      case 'viewer':
-        return 'VW'
-      case 'client':
-        return 'CL'
-      default:
-        return 'AD'
-    }
+  // Identity chip initials from the server session
+  const getSessionInitials = (user: SessionUser) => {
+    const source = user.displayName || user.username || '?'
+    return source
+      .split(/\s+/)
+      .map((w) => w[0])
+      .join('')
+      .slice(0, 2)
+      .toUpperCase()
   }
+
+  const roleLabel = (role: string) => role.replace('_', ' ').replace(/\b\w/g, (c) => c.toUpperCase())
 
   return (
     <header className="h-16 bg-white border-b border-slate-200 flex items-center justify-between px-4 sm:px-6 lg:px-8 sticky top-0 z-30 select-none shadow-2xs">
@@ -187,12 +184,27 @@ export const Header: React.FC<HeaderProps> = ({
           )}
         </div>
 
-        {/* User Profile Avatar Pill */}
-        <div
-          title={`Active Role: ${currentRole.replace('_', ' ')}`}
-          className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-indigo-100 border border-indigo-200 overflow-hidden flex items-center justify-center text-indigo-700 font-bold text-xs sm:text-sm shadow-2xs"
-        >
-          {getRoleInitials(currentRole)}
+        {/* Session Identity Pill + Sign Out (identity comes from the server session) */}
+        <div className="flex items-center gap-2">
+          <div
+            title={`Signed in as ${sessionUser.displayName || sessionUser.username} (${roleLabel(sessionUser.role)})`}
+            className="hidden sm:flex items-center gap-2.5 pl-1.5 pr-3 py-1.5 rounded-full bg-slate-50 border border-slate-200 shadow-2xs"
+          >
+            <div className="w-7 h-7 rounded-full bg-indigo-600 text-white flex items-center justify-center font-bold text-[10px]">
+              {getSessionInitials(sessionUser)}
+            </div>
+            <div className="leading-tight">
+              <p className="text-[11px] font-bold text-slate-800">{sessionUser.displayName || sessionUser.username}</p>
+              <p className="text-[9px] font-semibold text-indigo-600 uppercase tracking-wide">{roleLabel(sessionUser.role)}</p>
+            </div>
+          </div>
+          <button
+            onClick={onLogout}
+            title="Sign out"
+            className="p-2 rounded-lg text-slate-500 hover:text-rose-600 hover:bg-rose-50 transition-colors focus:outline-none focus:ring-2 focus:ring-rose-200"
+          >
+            <LogOut className="w-5 h-5" />
+          </button>
         </div>
       </div>
     </header>
