@@ -79,17 +79,105 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
 
   const activeBoard = boards.find((b) => b.id === activeBoardId) || boards[0]
 
+  // Create-board modal, extracted so the "no boards" empty state can render it too.
+  // If this stayed below the early return, clicking "Create First Board" would flip
+  // createBoardOpen to true but the modal markup would never be mounted (React
+  // returns the empty state again before reaching it).
+  const createBoardModal = createBoardOpen ? (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
+      <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4">
+        <h3 className="font-bold text-slate-900 text-base flex items-center space-x-2">
+          <KanbanIcon className="w-5 h-5 text-sky-600" />
+          <span>Create Kanban Board</span>
+        </h3>
+
+        <div className="space-y-3 text-xs">
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Board Title</label>
+            <input
+              type="text"
+              required
+              placeholder="e.g. Infrastructure Sprint"
+              value={newBoardTitle}
+              onChange={(e) => setNewBoardTitle(e.target.value)}
+              className="w-full p-2 border rounded-md"
+            />
+          </div>
+
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Description</label>
+            <input
+              type="text"
+              placeholder="Purpose of this board..."
+              value={newBoardDesc}
+              onChange={(e) => setNewBoardDesc(e.target.value)}
+              className="w-full p-2 border rounded-md"
+            />
+          </div>
+
+          <div>
+            <label className="block font-medium text-slate-700 mb-1">Theme Color</label>
+            <div className="flex items-center space-x-2">
+              {['#0284c7', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#0f172a'].map((c) => (
+                <button
+                  key={c}
+                  type="button"
+                  onClick={() => setNewBoardColor(c)}
+                  className={`w-6 h-6 rounded-full border-2 ${newBoardColor === c ? 'border-slate-800 scale-110' : 'border-transparent'}`}
+                  style={{ backgroundColor: c }}
+                />
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
+          <button
+            type="button"
+            onClick={() => setCreateBoardOpen(false)}
+            className="px-3 py-1.5 border rounded-md text-xs font-medium"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (!newBoardTitle.trim()) return
+              onCreateBoard({
+                title: newBoardTitle.trim(),
+                description: newBoardDesc.trim(),
+                color: newBoardColor,
+                isFavorite: false,
+              })
+              setCreateBoardOpen(false)
+              setNewBoardTitle('')
+              setNewBoardDesc('')
+            }}
+            className="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-md text-xs font-semibold"
+          >
+            Create Board
+          </button>
+        </div>
+      </div>
+    </div>
+  ) : null
+
   if (!activeBoard) {
     return (
-      <div className="text-center py-12">
-        <h2 className="text-lg font-bold text-slate-800">No Kanban Boards Available</h2>
-        <button
-          onClick={() => setCreateBoardOpen(true)}
-          className="mt-3 px-4 py-2 bg-sky-600 text-white rounded-lg font-semibold text-sm"
-        >
-          Create First Board
-        </button>
-      </div>
+      <>
+        <div className="text-center py-12">
+          <KanbanIcon className="w-12 h-12 text-slate-300 mx-auto mb-3" />
+          <h2 className="text-lg font-bold text-slate-800">No Kanban Boards Available</h2>
+          <p className="mt-1 text-sm text-slate-500">Create your first board to start organising tickets and work.</p>
+          <button
+            onClick={() => setCreateBoardOpen(true)}
+            className="mt-3 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-semibold text-sm"
+          >
+            Create First Board
+          </button>
+        </div>
+        {createBoardModal}
+      </>
     )
   }
 
@@ -927,85 +1015,8 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
         </div>
       )}
 
-      {/* Create New Board Modal */}
-      {createBoardOpen && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
-          <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4">
-            <h3 className="font-bold text-slate-900 text-base flex items-center space-x-2">
-              <KanbanIcon className="w-5 h-5 text-sky-600" />
-              <span>Create Kanban Board</span>
-            </h3>
-
-            <div className="space-y-3 text-xs">
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">Board Title</label>
-                <input
-                  type="text"
-                  required
-                  placeholder="e.g. Infrastructure Sprint"
-                  value={newBoardTitle}
-                  onChange={(e) => setNewBoardTitle(e.target.value)}
-                  className="w-full p-2 border rounded-md"
-                />
-              </div>
-
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">Description</label>
-                <input
-                  type="text"
-                  placeholder="Purpose of this board..."
-                  value={newBoardDesc}
-                  onChange={(e) => setNewBoardDesc(e.target.value)}
-                  className="w-full p-2 border rounded-md"
-                />
-              </div>
-
-              <div>
-                <label className="block font-medium text-slate-700 mb-1">Theme Color</label>
-                <div className="flex items-center space-x-2">
-                  {['#0284c7', '#10b981', '#f59e0b', '#8b5cf6', '#ef4444', '#0f172a'].map((c) => (
-                    <button
-                      key={c}
-                      type="button"
-                      onClick={() => setNewBoardColor(c)}
-                      className={`w-6 h-6 rounded-full border-2 ${newBoardColor === c ? 'border-slate-800 scale-110' : 'border-transparent'}`}
-                      style={{ backgroundColor: c }}
-                    />
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
-              <button
-                type="button"
-                onClick={() => setCreateBoardOpen(false)}
-                className="px-3 py-1.5 border rounded-md text-xs font-medium"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!newBoardTitle.trim()) return
-                  onCreateBoard({
-                    title: newBoardTitle.trim(),
-                    description: newBoardDesc.trim(),
-                    color: newBoardColor,
-                    isFavorite: false,
-                  })
-                  setCreateBoardOpen(false)
-                  setNewBoardTitle('')
-                  setNewBoardDesc('')
-                }}
-                className="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-md text-xs font-semibold"
-              >
-                Create Board
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      {/* Create New Board Modal (shared with the empty-state branch above) */}
+      {createBoardModal}
     </div>
   )
 }

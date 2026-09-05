@@ -14,6 +14,7 @@ Following the independent re-audit of `97011bc` (result: **PASSED — all 9 find
 
 - **Wiki privacy enforcement (RD-SEC-10)**: `GET /api/wiki/spaces` previously returned **all** spaces — including those marked `isPrivate` — to anonymous visitors and client sessions. Private spaces are now staff-only at the API level, and `GET /api/wiki/pages` additionally excludes public pages that live inside private spaces (defense in depth against content leakage through page listings).
 - **Crypto IDs**: the last remaining `Math.random()` usage in server code (SMTP email-log IDs) replaced with `crypto.randomUUID` — the server tree is now fully free of `Math.random()`.
+- **UI fix — Kanban empty state**: the "Create First Board" button previously did nothing when no boards existed: the component early-returned the empty state before the create-board modal was defined, so the modal was never mounted. The modal is now extracted and rendered in both branches; creating the first board from the empty state works end to end (verified in-browser).
 - **Verification**: 81/81 API security suite, 7/7 encryption tests, `tsc` clean, production build green, `npm audit` 0 vulnerabilities.
 
 
