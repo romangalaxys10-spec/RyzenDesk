@@ -30,6 +30,10 @@ export const MobileNav: React.FC<MobileNavProps> = ({
     ? [
         { id: 'portal', label: 'Portal', icon: ExternalLink },
         { id: 'tickets', label: 'My Tickets', icon: Ticket, badge: openTicketsCount },
+        // Clients can see the team board when the RBAC matrix grants kanban_view.
+        ...(sessionUser?.permissions?.kanban_view === false
+          ? []
+          : [{ id: 'kanban' as const, label: 'Kanban', icon: Kanban }]),
         { id: 'wiki', label: 'Help Base', icon: BookOpen },
       ]
     : [

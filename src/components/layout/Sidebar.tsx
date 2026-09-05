@@ -61,6 +61,16 @@ export const Sidebar: React.FC<SidebarProps> = ({
           icon: Ticket,
           badge: openTicketsCount > 0 ? openTicketsCount : undefined,
         },
+        // Clients can see the team board when the RBAC matrix grants kanban_view.
+        ...(sessionUser.permissions?.kanban_view === false
+          ? []
+          : [
+              {
+                id: 'kanban' as const,
+                label: 'Team Board (Kanban)',
+                icon: Kanban,
+              },
+            ]),
         {
           id: 'wiki' as const,
           label: 'Knowledge Base',
