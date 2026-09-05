@@ -49,6 +49,9 @@ export interface TicketSLAMetadata {
   isResponseBreached: boolean
   isResolutionBreached: boolean
   warned: boolean
+  /** Set once the SLA monitor has alerted on each breach type (prevents repeat notifications). */
+  responseBreachNotified?: boolean
+  resolutionBreachNotified?: boolean
 }
 
 export interface TicketTimeLog {
