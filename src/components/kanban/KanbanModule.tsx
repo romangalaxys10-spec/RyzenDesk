@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useState, useEffect } from 'react'
 import {
   Plus,
   MoreHorizontal,
@@ -80,6 +80,13 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
   // Ensure valid board object (ignore error payloads or malformed objects)
   const validBoards = boards.filter((b) => b && typeof b === 'object' && b.id && Array.isArray(b.lists))
   const activeBoard = validBoards.find((b) => b.id === activeBoardId) || validBoards[0]
+
+  // Keep activeBoardId synchronized when boards are loaded or changed
+  useEffect(() => {
+    if (validBoards.length > 0 && (!activeBoardId || !validBoards.some((b) => b.id === activeBoardId))) {
+      setActiveBoardId(validBoards[0].id)
+    }
+  }, [validBoards, activeBoardId])
 
   // Create-board modal, extracted so the "no boards" empty state can render it too.
   // If this stayed below the early return, clicking "Create First Board" would flip
@@ -343,12 +350,12 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
       {/* Board Canvas (Horizontal Scrollable) */}
       <div className="flex items-start space-x-4 overflow-x-auto pb-6 pt-1 min-h-[70vh]">
         {(activeBoard.lists || []).map((list) => {
-          const listCards = list.cards.filter(
+          const listCards = (list.cards || []).filter(
             (c) =>
               !searchFilter ||
-              c.title.toLowerCase().includes(searchFilter.toLowerCase()) ||
+              c.title?.toLowerCase().includes(searchFilter.toLowerCase()) ||
               c.description?.toLowerCase().includes(searchFilter.toLowerCase()) ||
-              c.labels.some((l) => l.name.toLowerCase().includes(searchFilter.toLowerCase()))
+              (c.labels || []).some((l) => (l.text || (l as any).name || '').toLowerCase().includes(searchFilter.toLowerCase()))
           )
 
           const isListDragTarget = dragOverListId === list.id
@@ -372,7 +379,7 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
                 e.preventDefault()
                 if (!draggedCardId) return
                 // Dropping on list container directly moves card to end of list
-                onUpdateCard(draggedCardId, { targetListId: list.id, targetIndex: list.cards.length })
+                onUpdateCard(draggedCardId, { targetListId: list.id, targetIndex: (list.cards || []).length })
                 setDraggedCardId(null)
                 setDraggedFromListId(null)
                 setDragOverListId(null)
@@ -422,11 +429,11 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
                 )}
 
                 {listCards.map((card, cardIndex) => {
-                  const completedChecklistItems = card.checklists.reduce(
-                    (acc, cl) => acc + cl.items.filter((it) => it.completed).length,
+                  const completedChecklistItems = (card.checklists || []).reduce(
+                    (acc, cl) => acc + (cl.items || []).filter((it) => (it as any).completed || (it as any).done).length,
                     0
                   )
-                  const totalChecklistItems = card.checklists.reduce((acc, cl) => acc + cl.items.length, 0)
+                  const totalChecklistItems = (card.checklists || []).reduce((acc, cl) => acc + (cl.items || []).length, 0)
                   const isOverdue = card.dueDate && new Date(card.dueDate).getTime() < Date.now() && !card.completed
                   const isBeingDragged = draggedCardId === card.id
                   const isDropTargetTop = dragOverCardId === card.id && dropPosition === 'top'
@@ -510,7 +517,7 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
                                   className="text-[10px] font-semibold px-2 py-0.5 rounded text-white"
                                   style={{ backgroundColor: lbl.color }}
                                 >
-                                  {lbl.name}
+                                  {lbl.text || (lbl as any).name || 'Label'}
                                 </span>
                               ))}
                             </div>
@@ -624,6 +631,12 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
                       placeholder="Enter a title for this card..."
                       value={newCardTitle}
                       onChange={(e) => setNewCardTitle(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault()
+                          handleAddCard(list.id)
+                        }
+                      }}
                       className="w-full text-xs p-2 rounded border border-slate-300 focus:outline-none focus:ring-1 focus:ring-sky-500"
                     />
                     <div className="flex items-center justify-between">
@@ -880,23 +893,26 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
 
                       {/* Items */}
                       <div className="space-y-1 pt-1">
-                        {cl.items.map((it) => (
-                          <div
-                            key={it.id}
-                            onClick={() => handleToggleChecklistItem(cl.id, it.id)}
-                            className="flex items-center space-x-2 p-1 rounded hover:bg-slate-100 cursor-pointer"
-                          >
-                            <input
-                              type="checkbox"
-                              checked={it.completed}
-                              readOnly
-                              className="w-4 h-4 text-sky-600 rounded"
-                            />
-                            <span className={it.completed ? 'line-through text-slate-400' : 'text-slate-700'}>
-                              {it.text}
-                            </span>
-                          </div>
-                        ))}
+                        {(cl.items || []).map((it) => {
+                          const isDone = Boolean((it as any).completed || (it as any).done)
+                          return (
+                            <div
+                              key={it.id}
+                              onClick={() => handleToggleChecklistItem(cl.id, it.id)}
+                              className="flex items-center space-x-2 p-1 rounded hover:bg-slate-100 cursor-pointer"
+                            >
+                              <input
+                                type="checkbox"
+                                checked={isDone}
+                                readOnly
+                                className="w-4 h-4 text-sky-600 rounded"
+                              />
+                              <span className={isDone ? 'line-through text-slate-400' : 'text-slate-700'}>
+                                {it.text}
+                              </span>
+                            </div>
+                          )
+                        })}
                       </div>
 
                       {/* Add item inline */}

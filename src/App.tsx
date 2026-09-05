@@ -406,16 +406,23 @@ export function AppContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ boardId, listId, ...card }),
       })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        console.error('Failed to create card:', errData.error || res.statusText)
+        return
+      }
       const newCard = await res.json()
-      setKanbanBoards((prev) =>
-        prev.map((b) => {
-          if (b.id !== boardId) return b
-          return {
-            ...b,
-            lists: b.lists.map((l) => (l.id === listId ? { ...l, cards: [...l.cards, newCard] } : l)),
-          }
-        })
-      )
+      if (newCard && newCard.id) {
+        setKanbanBoards((prev) =>
+          prev.map((b) => {
+            if (b.id !== boardId) return b
+            return {
+              ...b,
+              lists: (b.lists || []).map((l) => (l.id === listId ? { ...l, cards: [...(l.cards || []), newCard] } : l)),
+            }
+          })
+        )
+      }
     } catch (err) {
       console.error(err)
     }
