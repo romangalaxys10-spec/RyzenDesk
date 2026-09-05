@@ -79,7 +79,7 @@ export function timingSafeEqualStr(a: string, b: string): boolean {
 }
 
 /** Mask encrypted/hash fields before writing the DB file to disk. */
-function sealSensitiveFields(db: HelpdeskDB): HelpdeskDB {
+export function sealSensitiveFields(db: HelpdeskDB): HelpdeskDB {
   const clone = JSON.parse(JSON.stringify(db)) as HelpdeskDB
   if (clone.settings?.smtp?.pass && !clone.settings.smtp.pass.startsWith(SECRET_ENC_PREFIX)) {
     clone.settings.smtp.pass = encryptAtRest(clone.settings.smtp.pass)

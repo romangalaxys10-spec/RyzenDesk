@@ -42,9 +42,17 @@ export const MobileNav: React.FC<MobileNavProps> = ({
         ...(sessionUser?.permissions?.kanban_view === false
           ? []
           : [{ id: 'kanban' as const, label: 'Kanban', icon: Kanban }]),
+        ...(sessionUser?.permissions?.analytics_view === false
+          ? []
+          : [{ id: 'analytics' as const, label: 'Analytics', icon: BarChart3 }]),
+        ...((sessionUser?.role === 'super_admin' ||
+          sessionUser?.role === 'team_lead' ||
+          sessionUser?.permissions?.admin_manage_staff ||
+          sessionUser?.permissions?.admin_manage_rbac ||
+          sessionUser?.permissions?.admin_view_audit)
+          ? [{ id: 'admin' as const, label: 'Admin', icon: ShieldCheck }]
+          : []),
         { id: 'wiki', label: 'Wiki', icon: BookOpen },
-        { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-        { id: 'admin', label: 'Admin', icon: ShieldCheck },
       ]
 
   return (
