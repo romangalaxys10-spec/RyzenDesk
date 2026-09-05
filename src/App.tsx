@@ -376,8 +376,15 @@ export function AppContent() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(board),
       })
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}))
+        console.error('Failed to create board:', errData.error || res.statusText)
+        return
+      }
       const newB = await res.json()
-      setKanbanBoards((prev) => [...prev, newB])
+      if (newB && newB.id && Array.isArray(newB.lists)) {
+        setKanbanBoards((prev) => [...prev, newB])
+      }
     } catch (err) {
       console.error(err)
     }

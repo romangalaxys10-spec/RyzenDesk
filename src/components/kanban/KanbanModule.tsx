@@ -77,7 +77,9 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
   const [newChecklistItem, setNewChecklistItem] = useState('')
   const [activeChecklistId, setActiveChecklistId] = useState<string | null>(null)
 
-  const activeBoard = boards.find((b) => b.id === activeBoardId) || boards[0]
+  // Ensure valid board object (ignore error payloads or malformed objects)
+  const validBoards = boards.filter((b) => b && typeof b === 'object' && b.id && Array.isArray(b.lists))
+  const activeBoard = validBoards.find((b) => b.id === activeBoardId) || validBoards[0]
 
   // Create-board modal, extracted so the "no boards" empty state can render it too.
   // If this stayed below the early return, clicking "Create First Board" would flip
@@ -293,7 +295,7 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
       <div className="bg-white rounded-xl shadow-2xs border border-slate-200 p-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
         {/* Board Switcher tabs */}
         <div className="flex items-center space-x-2 overflow-x-auto pb-1">
-          {boards.map((b) => (
+          {validBoards.map((b) => (
             <button
               key={b.id}
               onClick={() => setActiveBoardId(b.id)}
@@ -340,7 +342,7 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
 
       {/* Board Canvas (Horizontal Scrollable) */}
       <div className="flex items-start space-x-4 overflow-x-auto pb-6 pt-1 min-h-[70vh]">
-        {activeBoard.lists.map((list) => {
+        {(activeBoard.lists || []).map((list) => {
           const listCards = list.cards.filter(
             (c) =>
               !searchFilter ||
