@@ -34,7 +34,10 @@ export const MobileNav: React.FC<MobileNavProps> = ({
       ]
     : [
         { id: 'tickets', label: 'Tickets', icon: Ticket, badge: openTicketsCount },
-        { id: 'kanban', label: 'Kanban', icon: Kanban },
+        // Match the desktop sidebar: respect the server-side kanban_view RBAC permission.
+        ...(sessionUser?.permissions?.kanban_view === false
+          ? []
+          : [{ id: 'kanban' as const, label: 'Kanban', icon: Kanban }]),
         { id: 'wiki', label: 'Wiki', icon: BookOpen },
         { id: 'analytics', label: 'Analytics', icon: BarChart3 },
         { id: 'admin', label: 'Admin', icon: ShieldCheck },
