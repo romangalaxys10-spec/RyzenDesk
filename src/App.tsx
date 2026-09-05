@@ -880,6 +880,7 @@ export function AppContent() {
             boards={kanbanBoards}
             staffList={staffList}
             tickets={tickets}
+            canCreateBoard={sessionUser?.permissions?.kanban_create_board === true}
             onUpdateBoard={handleUpdateBoard}
             onCreateBoard={handleCreateBoard}
             onDeleteBoard={handleDeleteBoard}

@@ -469,6 +469,7 @@ export interface SessionUser {
   email: string
   zaiId?: string
   mustChangePassword?: boolean
+  /** Live RBAC matrix row for this user's role (returned by /api/auth/me). */
   permissions?: RolePermissions
 }
 

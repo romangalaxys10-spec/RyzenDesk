@@ -28,6 +28,7 @@ interface KanbanModuleProps {
   boards: KanbanBoard[]
   staffList: StaffMember[]
   tickets: Ticket[]
+  canCreateBoard: boolean
   onUpdateBoard: (boardId: string, updates: Partial<KanbanBoard>) => void
   onCreateBoard: (board: { title: string; description: string; color: string; isFavorite: boolean }) => Promise<KanbanBoard | null | void> | void
   onDeleteBoard: (boardId: string) => void
@@ -41,6 +42,7 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
   boards,
   staffList,
   tickets,
+  canCreateBoard,
   onUpdateBoard,
   onCreateBoard,
   onDeleteBoard,
@@ -217,13 +219,22 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
         <div className="text-center py-12">
           <KanbanIcon className="w-12 h-12 text-slate-300 mx-auto mb-3" />
           <h2 className="text-lg font-bold text-slate-800">No Kanban Boards Available</h2>
-          <p className="mt-1 text-sm text-slate-500">Create your first board to start organising tickets and work.</p>
-          <button
-            onClick={handleOpenCreateModal}
-            className="mt-3 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-semibold text-sm cursor-pointer"
-          >
-            Create First Board
-          </button>
+          {canCreateBoard ? (
+            <>
+              <p className="mt-1 text-sm text-slate-500">Create your first board to start organising tickets and work.</p>
+              <button
+                onClick={handleOpenCreateModal}
+                className="mt-3 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-semibold text-sm cursor-pointer"
+              >
+                Create First Board
+              </button>
+            </>
+          ) : (
+            <p className="mt-1 text-sm text-slate-500 max-w-md mx-auto">
+              Board creation requires the <span className="font-medium text-slate-600">kanban_create_board</span> permission
+              (Team Lead or Admin). Ask an administrator to create the first board or grant your role permission.
+            </p>
+          )}
         </div>
         {createBoardModal}
       </>
@@ -358,13 +369,15 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
             </button>
           ))}
 
-          <button
-            onClick={handleOpenCreateModal}
-            className="flex items-center space-x-1 px-3 py-1.5 rounded-lg border border-dashed border-slate-300 text-slate-600 hover:bg-slate-50 text-xs font-medium cursor-pointer"
-          >
-            <Plus className="w-3.5 h-3.5" />
-            <span>New Board</span>
-          </button>
+          {canCreateBoard && (
+            <button
+              onClick={handleOpenCreateModal}
+              className="flex items-center space-x-1 px-3 py-1.5 rounded-lg border border-dashed border-slate-300 text-slate-600 hover:bg-slate-50 text-xs font-medium cursor-pointer"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>New Board</span>
+            </button>
+          )}
         </div>
 
         {/* Board Actions */}
