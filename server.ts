@@ -147,6 +147,7 @@ async function startServer() {
 
     logAudit(staff.username, staff.role, 'STAFF_LOGIN', 'system', `Staff sign-in from ${req.ip}`, undefined, req.ip)
 
+    const permissions = db.settings.rbac[staff.role]
     res.json({
       user: {
         kind: 'staff',
@@ -155,6 +156,7 @@ async function startServer() {
         role: staff.role,
         email: staff.email,
         mustChangePassword: Boolean(staff.mustChangePassword),
+        permissions,
       },
     })
   })
@@ -185,6 +187,7 @@ async function startServer() {
 
       logAudit(user.email, 'client', 'CLIENT_LOGIN', 'system', `Customer sign-in from ${req.ip}`, undefined, req.ip)
 
+      const permissions = db.settings.rbac.client
       res.json({
         user: {
           kind: 'client',
@@ -192,6 +195,7 @@ async function startServer() {
           displayName: user.fullName,
           role: 'client',
           email: user.email,
+          permissions,
         },
       })
     }

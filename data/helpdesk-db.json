@@ -1,7 +1,7 @@
 {
   "meta": {
     "version": 3,
-    "updatedAt": "2026-09-05T17:44:37.911Z",
+    "updatedAt": "2026-09-05T19:06:16.192Z",
     "ticketCounter": 104
   },
   "settings": {
@@ -455,7 +455,7 @@
       "color": "#0284c7",
       "isFavorite": true,
       "createdAt": "2026-09-03T14:19:53.272Z",
-      "updatedAt": "2026-09-04T14:51:57.772Z",
+      "updatedAt": "2026-09-05T19:01:35.702Z",
       "lists": [
         {
           "id": "list_backlog",
@@ -815,10 +815,10 @@
       "team": "Support",
       "email": "admin@ryzendesk.internal",
       "suspended": false,
-      "mustChangePassword": true,
+      "mustChangePassword": false,
       "telegramChatId": 100128931,
       "createdAt": "2026-09-03T14:19:53.272Z",
-      "passwordHash": "scrypt$4223860d7e37de294f1979dbcb246fee$136f2ba2f6a5343a0ac99910642fde022858fd9c994fd3011988c94977ce381fff659cbcd39cd345a8090ed4d576358598ab6f3f176fecef16b07093a56d5eb0"
+      "passwordHash": "scrypt$2ca57745ed3bb4ff21aaf1d9712fd266$c87412a52bd8bb509ad2d3174d714a10002963b0d2e17e61059ffd3bf395a4c655556bb23b156870eb133c09ed98cb230730f17026fd31a2af49fe5db63be3fa"
     },
     {
       "username": "roman",
@@ -855,6 +855,170 @@
     }
   ],
   "audit": [
+    {
+      "id": "aud_1788635173563_591bede0",
+      "at": "2026-09-05T19:06:13.563Z",
+      "actor": "admin",
+      "actorRole": "super_admin",
+      "action": "KANBAN_BOARD_CREATED",
+      "module": "kanban",
+      "entityId": "board_19de4886-d47b-40a3-8a2b-0d898ef1c79b",
+      "detail": "Created Kanban board \"Verification Board\"",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788635173540_ff9f5b57",
+      "at": "2026-09-05T19:06:13.540Z",
+      "actor": "admin",
+      "actorRole": "super_admin",
+      "action": "STAFF_LOGIN",
+      "module": "system",
+      "detail": "Staff sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788635123128_47123052",
+      "at": "2026-09-05T19:05:23.128Z",
+      "actor": "sarah.j@acmecorp.io",
+      "actorRole": "client",
+      "action": "CLIENT_LOGIN",
+      "module": "system",
+      "detail": "Customer sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788635120744_c5c0fc79",
+      "at": "2026-09-05T19:05:20.744Z",
+      "actor": "admin",
+      "actorRole": "super_admin",
+      "action": "STAFF_LOGIN",
+      "module": "system",
+      "detail": "Staff sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634895702_1428dc6f",
+      "at": "2026-09-05T19:01:35.702Z",
+      "actor": "admin",
+      "actorRole": "super_admin",
+      "action": "KANBAN_CARD_CREATED",
+      "module": "kanban",
+      "entityId": "card_dd337a69-561a-4fce-9c89-6f3949f1e780",
+      "detail": "Created card \"Test Card Via Curl\" in list Triage & Inflow",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634831789_e0ec1fe8",
+      "at": "2026-09-05T19:00:31.789Z",
+      "actor": "sarah.j@acmecorp.io",
+      "actorRole": "client",
+      "action": "CLIENT_LOGIN",
+      "module": "system",
+      "detail": "Customer sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634813972_9287f17f",
+      "at": "2026-09-05T19:00:13.973Z",
+      "actor": "admin",
+      "actorRole": "super_admin",
+      "action": "KANBAN_BOARD_CREATED",
+      "module": "kanban",
+      "entityId": "board_cabf12be-23ad-41a5-b7e4-ba3b981642c0",
+      "detail": "Created Kanban board \"Test Board Admin\"",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634812383_159ffb48",
+      "at": "2026-09-05T19:00:12.383Z",
+      "actor": "admin",
+      "actorRole": "super_admin",
+      "action": "STAFF_LOGIN",
+      "module": "system",
+      "detail": "Staff sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634477706_41355fc6",
+      "at": "2026-09-05T18:54:37.706Z",
+      "actor": "sarah.j@acmecorp.io",
+      "actorRole": "client",
+      "action": "CLIENT_LOGIN",
+      "module": "system",
+      "detail": "Customer sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634419227_b24e4b1c",
+      "at": "2026-09-05T18:53:39.227Z",
+      "actor": "mvance@fintech-global.com",
+      "actorRole": "client",
+      "action": "CLIENT_LOGIN",
+      "module": "system",
+      "detail": "Customer sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634417277_55ad03a0",
+      "at": "2026-09-05T18:53:37.277Z",
+      "actor": "sarah.j@acmecorp.io",
+      "actorRole": "client",
+      "action": "CLIENT_LOGIN",
+      "module": "system",
+      "detail": "Customer sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634340309_68a5f17e",
+      "at": "2026-09-05T18:52:20.309Z",
+      "actor": "sarah.j@acmecorp.io",
+      "actorRole": "client",
+      "action": "CLIENT_LOGIN",
+      "module": "system",
+      "detail": "Customer sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634087492_27ec5fd7",
+      "at": "2026-09-05T18:48:07.492Z",
+      "actor": "admin",
+      "actorRole": "super_admin",
+      "action": "KANBAN_CARD_CREATED",
+      "module": "kanban",
+      "entityId": "card_ba9b4030-7689-4555-9d54-60affdc9ca9b",
+      "detail": "Created card \"Test Card 123\" in list Triage & Inflow",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634084389_a683c370",
+      "at": "2026-09-05T18:48:04.389Z",
+      "actor": "admin",
+      "actorRole": "super_admin",
+      "action": "PASSWORD_CHANGED",
+      "module": "system",
+      "detail": "Password changed from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788634069975_0e4275e3",
+      "at": "2026-09-05T18:47:49.975Z",
+      "actor": "admin",
+      "actorRole": "super_admin",
+      "action": "STAFF_LOGIN",
+      "module": "system",
+      "detail": "Staff sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
+    {
+      "id": "aud_1788631553648_aed8fcde",
+      "at": "2026-09-05T18:05:53.648Z",
+      "actor": "sarah.j@acmecorp.io",
+      "actorRole": "client",
+      "action": "CLIENT_LOGIN",
+      "module": "system",
+      "detail": "Customer sign-in from 127.0.0.1",
+      "ip": "127.0.0.1"
+    },
     {
       "id": "aud_1",
       "at": "2026-09-03T14:19:53.272Z",

@@ -1,12 +1,14 @@
 import React from 'react'
-import { Ticket, Kanban, BookOpen, BarChart3, ShieldCheck, Plus } from 'lucide-react'
+import { Ticket, Kanban, BookOpen, BarChart3, ShieldCheck, Plus, ExternalLink } from 'lucide-react'
 import { useI18n } from '../../i18n/translations'
+import type { SessionUser } from '../../types'
 
 interface MobileNavProps {
   activeTab: 'tickets' | 'kanban' | 'wiki' | 'analytics' | 'admin' | 'portal'
   setActiveTab: (tab: 'tickets' | 'kanban' | 'wiki' | 'analytics' | 'admin' | 'portal') => void
   onOpenNewTicket: () => void
   openTicketsCount: number
+  sessionUser?: SessionUser | null
 }
 
 export const MobileNav: React.FC<MobileNavProps> = ({
@@ -14,21 +16,29 @@ export const MobileNav: React.FC<MobileNavProps> = ({
   setActiveTab,
   onOpenNewTicket,
   openTicketsCount,
+  sessionUser,
 }) => {
   const { t } = useI18n()
+  const isClient = sessionUser?.kind === 'client'
 
   const tabs: Array<{
-    id: 'tickets' | 'kanban' | 'wiki' | 'analytics' | 'admin'
+    id: 'tickets' | 'kanban' | 'wiki' | 'analytics' | 'admin' | 'portal'
     label: string
     icon: any
     badge?: number
-  }> = [
-    { id: 'tickets', label: 'Tickets', icon: Ticket, badge: openTicketsCount },
-    { id: 'kanban', label: 'Kanban', icon: Kanban },
-    { id: 'wiki', label: 'Wiki', icon: BookOpen },
-    { id: 'analytics', label: 'Analytics', icon: BarChart3 },
-    { id: 'admin', label: 'Admin', icon: ShieldCheck },
-  ]
+  }> = isClient
+    ? [
+        { id: 'portal', label: 'Portal', icon: ExternalLink },
+        { id: 'tickets', label: 'My Tickets', icon: Ticket, badge: openTicketsCount },
+        { id: 'wiki', label: 'Help Base', icon: BookOpen },
+      ]
+    : [
+        { id: 'tickets', label: 'Tickets', icon: Ticket, badge: openTicketsCount },
+        { id: 'kanban', label: 'Kanban', icon: Kanban },
+        { id: 'wiki', label: 'Wiki', icon: BookOpen },
+        { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+        { id: 'admin', label: 'Admin', icon: ShieldCheck },
+      ]
 
   return (
     <div className="lg:hidden fixed bottom-0 left-0 right-0 z-40 bg-slate-900/95 backdrop-blur-md border-t border-slate-800 px-2 py-1 flex items-center justify-around shadow-2xl safe-area-bottom">

@@ -469,6 +469,7 @@ export interface SessionUser {
   email: string
   zaiId?: string
   mustChangePassword?: boolean
+  permissions?: RolePermissions
 }
 
 export interface CloudSyncStatus {

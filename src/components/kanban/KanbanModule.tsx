@@ -29,7 +29,7 @@ interface KanbanModuleProps {
   staffList: StaffMember[]
   tickets: Ticket[]
   onUpdateBoard: (boardId: string, updates: Partial<KanbanBoard>) => void
-  onCreateBoard: (board: { title: string; description: string; color: string; isFavorite: boolean }) => void
+  onCreateBoard: (board: { title: string; description: string; color: string; isFavorite: boolean }) => Promise<KanbanBoard | null | void> | void
   onDeleteBoard: (boardId: string) => void
   onCreateCard: (boardId: string, listId: string, card: { title: string; description?: string }) => void
   onUpdateCard: (cardId: string, updates: Partial<KanbanCard> & { targetListId?: string; targetIndex?: number }) => void
@@ -57,6 +57,8 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
   const [newListTitle, setNewListTitle] = useState('')
   const [showAddList, setShowAddList] = useState(false)
   const [createBoardOpen, setCreateBoardOpen] = useState(false)
+  const [isCreatingBoard, setIsCreatingBoard] = useState(false)
+  const [createBoardError, setCreateBoardError] = useState<string | null>(null)
   const [searchFilter, setSearchFilter] = useState('')
 
   // Drag and drop state
@@ -88,10 +90,47 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
     }
   }, [validBoards, activeBoardId])
 
+  const handleOpenCreateModal = () => {
+    setCreateBoardError(null)
+    setNewBoardTitle('')
+    setNewBoardDesc('')
+    setNewBoardColor('#0284c7')
+    setCreateBoardOpen(true)
+  }
+
+  const handleDoCreateBoard = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault()
+    const trimmed = newBoardTitle.trim()
+    if (!trimmed || isCreatingBoard) return
+    setIsCreatingBoard(true)
+    setCreateBoardError(null)
+    try {
+      const created = await onCreateBoard({
+        title: trimmed,
+        description: newBoardDesc.trim(),
+        color: newBoardColor,
+        isFavorite: false,
+      })
+      if (created && (created as KanbanBoard).id) {
+        setActiveBoardId((created as KanbanBoard).id)
+        setCreateBoardOpen(false)
+        setNewBoardTitle('')
+        setNewBoardDesc('')
+      } else if (created === null) {
+        setCreateBoardError('Failed to create board. You may not have the required permissions.')
+      } else {
+        setCreateBoardOpen(false)
+        setNewBoardTitle('')
+        setNewBoardDesc('')
+      }
+    } catch (err: any) {
+      setCreateBoardError(err?.message || 'Error creating board')
+    } finally {
+      setIsCreatingBoard(false)
+    }
+  }
+
   // Create-board modal, extracted so the "no boards" empty state can render it too.
-  // If this stayed below the early return, clicking "Create First Board" would flip
-  // createBoardOpen to true but the modal markup would never be mounted (React
-  // returns the empty state again before reaching it).
   const createBoardModal = createBoardOpen ? (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/60 backdrop-blur-xs p-4">
       <div className="bg-white rounded-xl shadow-2xl border border-slate-200 max-w-md w-full p-5 space-y-4">
@@ -100,16 +139,24 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
           <span>Create Kanban Board</span>
         </h3>
 
-        <div className="space-y-3 text-xs">
+        {createBoardError && (
+          <div className="p-3 rounded-lg bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start gap-2">
+            <AlertCircle className="w-4 h-4 shrink-0 text-rose-500 mt-0.5" />
+            <span>{createBoardError}</span>
+          </div>
+        )}
+
+        <form onSubmit={handleDoCreateBoard} className="space-y-3 text-xs">
           <div>
             <label className="block font-medium text-slate-700 mb-1">Board Title</label>
             <input
               type="text"
               required
+              autoFocus
               placeholder="e.g. Infrastructure Sprint"
               value={newBoardTitle}
               onChange={(e) => setNewBoardTitle(e.target.value)}
-              className="w-full p-2 border rounded-md"
+              className="w-full p-2 border rounded-md focus:outline-none focus:ring-1 focus:ring-sky-500"
             />
           </div>
 
@@ -120,7 +167,7 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
               placeholder="Purpose of this board..."
               value={newBoardDesc}
               onChange={(e) => setNewBoardDesc(e.target.value)}
-              className="w-full p-2 border rounded-md"
+              className="w-full p-2 border rounded-md focus:outline-none focus:ring-1 focus:ring-sky-500"
             />
           </div>
 
@@ -132,41 +179,34 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
                   key={c}
                   type="button"
                   onClick={() => setNewBoardColor(c)}
-                  className={`w-6 h-6 rounded-full border-2 ${newBoardColor === c ? 'border-slate-800 scale-110' : 'border-transparent'}`}
+                  className={`w-6 h-6 rounded-full border-2 cursor-pointer transition-transform ${newBoardColor === c ? 'border-slate-800 scale-110' : 'border-transparent'}`}
                   style={{ backgroundColor: c }}
                 />
               ))}
             </div>
           </div>
-        </div>
 
-        <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
-          <button
-            type="button"
-            onClick={() => setCreateBoardOpen(false)}
-            className="px-3 py-1.5 border rounded-md text-xs font-medium"
-          >
-            Cancel
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              if (!newBoardTitle.trim()) return
-              onCreateBoard({
-                title: newBoardTitle.trim(),
-                description: newBoardDesc.trim(),
-                color: newBoardColor,
-                isFavorite: false,
-              })
-              setCreateBoardOpen(false)
-              setNewBoardTitle('')
-              setNewBoardDesc('')
-            }}
-            className="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 text-white rounded-md text-xs font-semibold"
-          >
-            Create Board
-          </button>
-        </div>
+          <div className="flex justify-end space-x-2 pt-3 border-t border-slate-100">
+            <button
+              type="button"
+              disabled={isCreatingBoard}
+              onClick={() => setCreateBoardOpen(false)}
+              className="px-3 py-1.5 border rounded-md text-xs font-medium cursor-pointer disabled:opacity-50 hover:bg-slate-50"
+            >
+              Cancel
+            </button>
+            <button
+              type="submit"
+              disabled={isCreatingBoard || !newBoardTitle.trim()}
+              className="px-4 py-1.5 bg-sky-600 hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-md text-xs font-semibold cursor-pointer flex items-center gap-1.5"
+            >
+              {isCreatingBoard && (
+                <span className="w-3 h-3 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+              )}
+              <span>{isCreatingBoard ? 'Creating...' : 'Create Board'}</span>
+            </button>
+          </div>
+        </form>
       </div>
     </div>
   ) : null
@@ -179,8 +219,8 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
           <h2 className="text-lg font-bold text-slate-800">No Kanban Boards Available</h2>
           <p className="mt-1 text-sm text-slate-500">Create your first board to start organising tickets and work.</p>
           <button
-            onClick={() => setCreateBoardOpen(true)}
-            className="mt-3 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-semibold text-sm"
+            onClick={handleOpenCreateModal}
+            className="mt-3 px-4 py-2 bg-sky-600 hover:bg-sky-500 text-white rounded-lg font-semibold text-sm cursor-pointer"
           >
             Create First Board
           </button>
@@ -319,7 +359,7 @@ export const KanbanModule: React.FC<KanbanModuleProps> = ({
           ))}
 
           <button
-            onClick={() => setCreateBoardOpen(true)}
+            onClick={handleOpenCreateModal}
             className="flex items-center space-x-1 px-3 py-1.5 rounded-lg border border-dashed border-slate-300 text-slate-600 hover:bg-slate-50 text-xs font-medium cursor-pointer"
           >
             <Plus className="w-3.5 h-3.5" />

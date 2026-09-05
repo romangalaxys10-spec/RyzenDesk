@@ -46,34 +46,63 @@ export const Sidebar: React.FC<SidebarProps> = ({
 }) => {
   const { t } = useI18n()
 
-  const mainNavItems = [
-    {
-      id: 'tickets' as const,
-      label: 'Ticket Queue',
-      icon: Ticket,
-      badge: openTicketsCount > 0 ? openTicketsCount : undefined,
-    },
-    {
-      id: 'kanban' as const,
-      label: 'Team Board (Kanban)',
-      icon: Kanban,
-    },
-    {
-      id: 'wiki' as const,
-      label: 'Knowledge Wiki',
-      icon: BookOpen,
-    },
-    {
-      id: 'analytics' as const,
-      label: 'Reports & Analytics',
-      icon: BarChart3,
-    },
-    {
-      id: 'portal' as const,
-      label: 'Customer Portal',
-      icon: ExternalLink,
-    },
-  ]
+  const isClient = sessionUser.kind === 'client'
+
+  const mainNavItems = isClient
+    ? [
+        {
+          id: 'portal' as const,
+          label: 'Customer Portal',
+          icon: ExternalLink,
+        },
+        {
+          id: 'tickets' as const,
+          label: 'My Tickets',
+          icon: Ticket,
+          badge: openTicketsCount > 0 ? openTicketsCount : undefined,
+        },
+        {
+          id: 'wiki' as const,
+          label: 'Knowledge Base',
+          icon: BookOpen,
+        },
+      ]
+    : [
+        {
+          id: 'tickets' as const,
+          label: 'Ticket Queue',
+          icon: Ticket,
+          badge: openTicketsCount > 0 ? openTicketsCount : undefined,
+        },
+        {
+          id: 'kanban' as const,
+          label: 'Team Board (Kanban)',
+          icon: Kanban,
+        },
+        {
+          id: 'wiki' as const,
+          label: 'Knowledge Wiki',
+          icon: BookOpen,
+        },
+        {
+          id: 'analytics' as const,
+          label: 'Reports & Analytics',
+          icon: BarChart3,
+        },
+        {
+          id: 'portal' as const,
+          label: 'Customer Portal',
+          icon: ExternalLink,
+        },
+      ]
+
+  const showAdminNav =
+    !isClient &&
+    (sessionUser.role === 'super_admin' ||
+      sessionUser.role === 'team_lead' ||
+      sessionUser.permissions?.admin_manage_staff ||
+      sessionUser.permissions?.admin_manage_rbac ||
+      sessionUser.permissions?.admin_view_audit)
 
   const adminNavItems = [
     {
@@ -150,32 +179,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
           )
         })}
 
-        {/* System Admin Category divider */}
-        <div className="pt-5 pb-2 text-xs font-bold text-slate-500 uppercase tracking-widest px-3">
-          System Admin
-        </div>
+        {showAdminNav && (
+          <>
+            {/* System Admin Category divider */}
+            <div className="pt-5 pb-2 text-xs font-bold text-slate-500 uppercase tracking-widest px-3">
+              System Admin
+            </div>
 
-        {adminNavItems.map((item, idx) => {
-          const Icon = item.icon
-          const isActive = activeTab === 'admin'
-          return (
-            <button
-              key={item.label}
-              onClick={() => {
-                setActiveTab('admin')
-                onClose()
-              }}
-              className={`w-full flex items-center gap-3 px-3 py-2 rounded-md font-medium text-sm transition-colors text-left cursor-pointer ${
-                isActive && idx === 0
-                  ? 'bg-slate-800 text-white'
-                  : 'text-slate-400 hover:bg-slate-800 hover:text-white'
-              }`}
-            >
-              <Icon className="w-5 h-5" />
-              <span>{item.label}</span>
-            </button>
-          )
-        })}
+            {adminNavItems.map((item, idx) => {
+              const Icon = item.icon
+              const isActive = activeTab === 'admin'
+              return (
+                <button
+                  key={item.label}
+                  onClick={() => {
+                    setActiveTab('admin')
+                    onClose()
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-2 rounded-md font-medium text-sm transition-colors text-left cursor-pointer ${
+                    isActive && idx === 0
+                      ? 'bg-slate-800 text-white'
+                      : 'text-slate-400 hover:bg-slate-800 hover:text-white'
+                  }`}
+                >
+                  <Icon className="w-5 h-5" />
+                  <span>{item.label}</span>
+                </button>
+              )
+            })}
+          </>
+        )}
 
         {/* Authenticated Session Identity (from server — read-only) */}
         <div className="pt-6 px-3">

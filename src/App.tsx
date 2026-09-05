@@ -13,7 +13,7 @@ import { AnalyticsDashboard } from './components/analytics/AnalyticsDashboard'
 import { AdminConsole } from './components/admin/AdminConsole'
 import { CustomerPortal } from './components/client/CustomerPortal'
 import { MobileNav } from './components/common/MobileNav'
-import { ToastContainer } from './components/common/ToastContainer'
+import { ToastContainer, toast } from './components/common/ToastContainer'
 import { OfflineBanner } from './components/common/OfflineBanner'
 import { CommandPalette } from './components/common/CommandPalette'
 import { InstallationWizard } from './components/install/InstallationWizard'
@@ -171,6 +171,9 @@ export function AppContent() {
             setSessionUser(data.user)
             setCurrentRole(data.user.role)
             setCurrentUsername(data.user.username)
+            if (data.user.kind === 'client' && (activeTab === 'kanban' || activeTab === 'analytics' || activeTab === 'admin')) {
+              setActiveTab('portal')
+            }
           }
         }
       } catch {
@@ -190,6 +193,9 @@ export function AppContent() {
       setSessionUser(user)
       setCurrentRole(user.role)
       setCurrentUsername(user.username)
+      if (user.kind === 'client') {
+        setActiveTab('portal')
+      }
       setLoadingInitial(true)
       void fetchAllData()
     },
@@ -369,7 +375,7 @@ export function AppContent() {
     }
   }
 
-  const handleCreateBoard = async (board: any) => {
+  const handleCreateBoard = async (board: any): Promise<KanbanBoard | null> => {
     try {
       const res = await fetch('/api/kanban/boards', {
         method: 'POST',
@@ -378,15 +384,22 @@ export function AppContent() {
       })
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}))
-        console.error('Failed to create board:', errData.error || res.statusText)
-        return
+        const errorMsg = errData.error || res.statusText || 'Failed to create board'
+        console.error('Failed to create board:', errorMsg)
+        toast.error('Cannot Create Board', errorMsg)
+        return null
       }
       const newB = await res.json()
       if (newB && newB.id && Array.isArray(newB.lists)) {
         setKanbanBoards((prev) => [...prev, newB])
+        toast.success('Board Created', `Kanban board "${newB.title}" created`)
+        return newB
       }
-    } catch (err) {
+      return null
+    } catch (err: any) {
       console.error(err)
+      toast.error('Network Error', err?.message || 'Could not connect to server')
+      return null
     }
   }
 
@@ -394,6 +407,7 @@ export function AppContent() {
     setKanbanBoards((prev) => prev.filter((b) => b.id !== boardId))
     try {
       await fetch(`/api/kanban/boards/${boardId}`, { method: 'DELETE' })
+      toast.info('Board Deleted', 'Board removed from workspace')
     } catch (err) {
       console.error(err)
     }
@@ -408,7 +422,9 @@ export function AppContent() {
       })
       if (!res.ok) {
         const errData = await res.json().catch(() => ({}))
-        console.error('Failed to create card:', errData.error || res.statusText)
+        const errMsg = errData.error || res.statusText || 'Failed to create card'
+        console.error('Failed to create card:', errMsg)
+        toast.error('Cannot Create Card', errMsg)
         return
       }
       const newCard = await res.json()
@@ -422,9 +438,11 @@ export function AppContent() {
             }
           })
         )
+        toast.success('Card Created', `Added card "${newCard.title}"`)
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err)
+      toast.error('Network Error', err?.message || 'Could not connect to server')
     }
   }
 
@@ -953,6 +971,7 @@ export function AppContent() {
         }}
         onOpenNewTicket={() => setIsSubmitModalOpen(true)}
         openTicketsCount={openTicketsCount}
+        sessionUser={sessionUser}
       />
 
       {/* Global New Ticket Modal */}
