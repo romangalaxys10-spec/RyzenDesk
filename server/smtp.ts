@@ -1,4 +1,5 @@
 import { getDb, saveDb, logAudit } from './db'
+import { newId } from './auth'
 import type { EmailNotificationLog } from '../src/types'
 
 export interface EmailPayload {
@@ -14,7 +15,7 @@ export async function sendEmailNotification(payload: EmailPayload): Promise<Emai
   const smtp = db.settings.smtp
 
   const logEntry: EmailNotificationLog = {
-    id: `em_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`,
+    id: newId('em'),
     to: payload.to,
     subject: payload.subject,
     event: payload.event,

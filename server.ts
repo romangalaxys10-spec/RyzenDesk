@@ -1711,6 +1711,12 @@ ${threadText}`
 
   app.get('/api/wiki/spaces', (req, res) => {
     const db = getDb()
+    // Server-side privacy enforcement: private spaces are staff-only.
+    // Anonymous visitors and client sessions never receive them, even by direct API call.
+    if (req.user?.kind !== 'staff') {
+      res.json(db.wikiSpaces.filter((s) => !s.isPrivate))
+      return
+    }
     res.json(db.wikiSpaces)
   })
 
@@ -1747,7 +1753,9 @@ ${threadText}`
     const user = req.user
     const canSeeInternal = Boolean(user?.kind === 'staff' && user.permissions.wiki_view_internal)
     if (!canSeeInternal) {
-      pages = pages.filter((p) => p.visibility === 'public')
+      // Defense in depth: exclude public pages that live inside private spaces.
+      const privateSpaceIds = new Set(db.wikiSpaces.filter((s) => s.isPrivate).map((s) => s.id))
+      pages = pages.filter((p) => p.visibility === 'public' && !privateSpaceIds.has(p.spaceId))
     } else if (visibility) {
       pages = pages.filter((p) => p.visibility === visibility)
     }

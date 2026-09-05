@@ -89,11 +89,13 @@ Security-relevant events are recorded with actor, role, module, entity, detail a
 | RD-SEC-07 | Missing security headers & rate limiting | ✅ Fixed | Header middleware (incl. HSTS/CSP) + sliding-window limiters |
 | RD-SEC-08 | Broken Dockerfile (Next.js artifacts) | ✅ Fixed | Rewritten multi-stage Vite/Express Dockerfile, non-root, healthcheck on `/api/health` |
 | RD-SEC-09 | Vulnerable transitive deps (`qs`) | ✅ Fixed | Package overrides → `npm audit` reports 0 vulnerabilities |
+| RD-SEC-10 | Private wiki spaces/pages readable by anonymous & client sessions via direct API call (found during post-audit re-verification) | ✅ Fixed | `GET /api/wiki/spaces` filters `isPrivate` spaces for non-staff; `GET /api/wiki/pages` additionally excludes public pages nested inside private spaces |
 
 ---
 
 ## 12. Verification Evidence
 
+- External re-audit of commit `97011bc` (RD-SEC-01 → RD-SEC-09): **PASSED — all findings verified resolved** by independent reviewer (code inspection, dependency audit, clean build confirmation).
 - `scripts/rd-qa-suite.sh` (repository-independent): **81/81 checks passing** — unauthenticated access matrix, install guard, login/rotation flow, RBAC enforcement for Super Admin / Team Lead / Agent / Client, client scoping, internal-note leakage, SSRF vectors (loopback, metadata, file scheme, credentials, localhost, RFC1918), token entropy, brute-force rate limiting, CSRF origin blocking, session lifecycle (logout invalidation, tampered cookie rejection) and API 404 behaviour.
 - Encryption suite: envelope round-trip, wrong-key rejection, tamper detection, no-plaintext checks — 7/7 passing.
 - `npm audit`: 0 vulnerabilities. Secret scan across the tree: no committed credentials (runtime tokens and lock files are Git-ignored).
