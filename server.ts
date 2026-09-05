@@ -743,6 +743,79 @@ async function startServer() {
   )
 
   /* --------------------------------------------------------------------------
+     SLA BREACH MONITOR
+     - Breach flags were only computed at creation (always false) and never
+       enforced server-side. This scan flips flags on real breaches and fires
+       one notification per breach type per ticket (no repeat spam).
+     - Runs every 5 minutes; also triggerable via POST /api/admin/sla/scan.
+     -------------------------------------------------------------------------- */
+
+  function scanSlaBreaches(): { responseBreaches: string[]; resolutionBreaches: string[] } {
+    const db = getDb()
+    const now = Date.now()
+    const responseBreaches: string[] = []
+    const resolutionBreaches: string[] = []
+
+    for (const t of db.tickets) {
+      if (t.status === 'resolved' || t.status === 'closed') continue
+      const sla = t.sla
+      if (!sla) continue
+      let changed = false
+
+      // Response breach: no first response before the deadline
+      if (!sla.firstRespondedAt && !sla.isResponseBreached && now > new Date(sla.responseDueAt).getTime()) {
+        sla.isResponseBreached = true
+        changed = true
+      }
+      // Resolution breach: not resolved before the deadline
+      if (!sla.resolvedAt && !sla.isResolutionBreached && now > new Date(sla.resolutionDueAt).getTime()) {
+        sla.isResolutionBreached = true
+        changed = true
+      }
+
+      // Notifications: exactly once per breach type per ticket
+      if (sla.isResponseBreached && !sla.responseBreachNotified) {
+        sla.responseBreachNotified = true
+        responseBreaches.push(t.id)
+        notifySlaBreached(t.id, t.priority, t.team)
+        void triggerWebhooks('ticket.sla_breached', { ticketId: t.id, type: 'response', priority: t.priority, team: t.team })
+        logAudit('system', 'super_admin', 'SLA_RESPONSE_BREACHED', 'tickets', `Response SLA breached on ${t.id} (${t.priority})`, t.id)
+      }
+      if (sla.isResolutionBreached && !sla.resolutionBreachNotified) {
+        sla.resolutionBreachNotified = true
+        resolutionBreaches.push(t.id)
+        notifySlaBreached(t.id, t.priority, t.team)
+        void triggerWebhooks('ticket.sla_breached', { ticketId: t.id, type: 'resolution', priority: t.priority, team: t.team })
+        logAudit('system', 'super_admin', 'SLA_RESOLUTION_BREACHED', 'tickets', `Resolution SLA breached on ${t.id} (${t.priority})`, t.id)
+      }
+
+      if (changed) t.updatedAt = new Date().toISOString()
+    }
+
+    if (responseBreaches.length || resolutionBreaches.length) {
+      saveDb(db)
+    }
+    return { responseBreaches, resolutionBreaches }
+  }
+
+  // Manual trigger (SLA managers) — returns what was newly breached
+  app.post('/api/admin/sla/scan', requirePermission('sla_manage'), (req, res) => {
+    const result = scanSlaBreaches()
+    logAudit(req.user!.username, req.user!.role, 'SLA_SCAN_RUN', 'system', `SLA scan: ${result.responseBreaches.length} response + ${result.resolutionBreaches.length} resolution breaches`, undefined, req.ip)
+    res.json({ success: true, ...result })
+  })
+
+  // Background scan every 5 minutes
+  const slaScanTimer = setInterval(() => {
+    try {
+      scanSlaBreaches()
+    } catch (e) {
+      console.error('SLA scan error:', e)
+    }
+  }, 5 * 60_000)
+  slaScanTimer.unref()
+
+  /* --------------------------------------------------------------------------
      TICKETS API
      - Staff require tickets_view_all for the global queue.
      - Authenticated customers (client sessions) are hard-scoped to their own
