@@ -1087,6 +1087,17 @@ async function startServer() {
     const { status, priority, assignee, team } = req.body || {}
     const previousStatus = ticket.status
 
+    // Enum validation — an invalid status/priority would otherwise be
+    // persisted verbatim and poison every filtered queue view.
+    const VALID_STATUSES = ['open', 'in_progress', 'waiting_customer', 'resolved', 'closed']
+    const VALID_PRIORITIES = ['low', 'medium', 'high', 'urgent']
+    if (status && !VALID_STATUSES.includes(String(status))) {
+      return res.status(400).json({ error: `Invalid status. Allowed: ${VALID_STATUSES.join(', ')}` })
+    }
+    if (priority && !VALID_PRIORITIES.includes(String(priority))) {
+      return res.status(400).json({ error: `Invalid priority. Allowed: ${VALID_PRIORITIES.join(', ')}` })
+    }
+
     if (status) {
       ticket.status = status as TicketStatus
       if (status === 'resolved' && !ticket.sla.resolvedAt) {
@@ -2150,11 +2161,15 @@ ${threadText}`
     if (password && !isStrongPassword(String(password))) {
       return res.status(400).json({ error: 'Password must be at least 8 characters' })
     }
+    const VALID_ROLES: StaffRole[] = ['super_admin', 'team_lead', 'agent', 'viewer', 'client']
+    if (typeof role !== 'undefined' && !VALID_ROLES.includes(String(role) as StaffRole)) {
+      return res.status(400).json({ error: `Invalid role. Allowed: ${VALID_ROLES.join(', ')}` })
+    }
 
     const newStaff: StaffMember = {
       username: cleanUsername,
       displayName: displayName || cleanUsername,
-      role: ['super_admin', 'team_lead', 'agent', 'viewer', 'client'].includes(String(role)) ? (role as StaffRole) : 'agent',
+      role: (VALID_ROLES.includes(String(role) as StaffRole) ? role : 'agent') as StaffRole,
       team: (team as Team) || 'Support',
       email: email || `${cleanUsername}@ryzendesk.internal`,
       suspended: false,
