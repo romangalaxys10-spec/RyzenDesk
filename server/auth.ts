@@ -366,6 +366,13 @@ const rateBuckets = new Map<string, RateBucket>()
 
 export function rateLimit(options: { windowMs: number; max: number; key?: string }) {
   return (req: Request, res: Response, next: NextFunction): void => {
+    // Exempt loopback/localhost in local development so previewing is never blocked
+    const ip = req.ip || ''
+    const isLoopback = ip === '127.0.0.1' || ip === '::1' || ip === '::ffff:127.0.0.1' || ip === ''
+    if (process.env.NODE_ENV !== 'production' && isLoopback && options.key !== 'login') {
+      return next()
+    }
+
     const bucketKey = `${options.key || 'global'}:${req.ip || 'unknown'}`
     const now = Date.now()
     let bucket = rateBuckets.get(bucketKey)
