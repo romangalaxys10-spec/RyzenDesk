@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { X, Send, CheckCircle2, Copy, Check, LifeBuoy } from 'lucide-react'
 import type { IssueType, TicketPriority, Team, FileAttachment, Ticket, WikiPage } from '../../types'
 import { AttachmentList, AttachmentUploader } from './AttachmentViewer'
@@ -45,6 +45,43 @@ export const TicketSubmitModal: React.FC<TicketSubmitModalProps> = ({
   const [submitting, setSubmitting] = useState(false)
   const [createdResult, setCreatedResult] = useState<{ ticket: Ticket; secretToken: string } | null>(null)
   const [copiedToken, setCopiedToken] = useState(false)
+
+  // Auto-QA fetcher: as the customer describes the issue, ask the server to
+  // match public FAQ/Wiki articles (debounced so we don't hammer the API).
+  type Suggestion = { id: string; source: 'wiki'; title: string; snippet: string }
+  const [suggestions, setSuggestions] = useState<Suggestion[]>([])
+  const [aiTip, setAiTip] = useState<string | null>(null)
+  const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const suggestQuery = `${subject} ${body}`.trim()
+
+  useEffect(() => {
+    if (!isOpen) return
+    if (suggestTimer.current) clearTimeout(suggestTimer.current)
+    if (suggestQuery.length < 8) {
+      setSuggestions([])
+      setAiTip(null)
+      return
+    }
+    suggestTimer.current = setTimeout(async () => {
+      try {
+        const res = await fetch('/api/suggest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ query: suggestQuery }),
+        })
+        if (res.ok) {
+          const data = await res.json()
+          setSuggestions(Array.isArray(data.suggestions) ? data.suggestions : [])
+          setAiTip(typeof data.aiTip === 'string' ? data.aiTip : null)
+        }
+      } catch {
+        /* suggestions are best-effort; ignore network errors */
+      }
+    }, 700)
+    return () => {
+      if (suggestTimer.current) clearTimeout(suggestTimer.current)
+    }
+  }, [suggestQuery, isOpen])
 
   if (!isOpen) return null
 
@@ -252,10 +289,12 @@ export const TicketSubmitModal: React.FC<TicketSubmitModalProps> = ({
               />
             </div>
 
-            {/* Self-service Knowledge Deflection Suggestions */}
+            {/* Self-service Knowledge Deflection Suggestions (server-matched) */}
             <SelfServiceKnowledgeDeflection
               query={`${subject} ${body}`}
               wikiPages={wikiPages}
+              serverSuggestions={suggestions}
+              aiTip={aiTip}
               onSelectPage={(page) => {
                 onClose()
                 onSelectWikiPage?.(page)

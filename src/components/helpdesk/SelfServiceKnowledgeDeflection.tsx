@@ -6,22 +6,35 @@ interface SelfServiceKnowledgeDeflectionProps {
   query: string
   wikiPages: WikiPage[]
   onSelectPage?: (page: WikiPage) => void
+  /** Server-matched suggestions from POST /api/suggest (keyword-scored, public pages only). */
+  serverSuggestions?: Array<{ id: string; source: 'wiki'; title: string; snippet: string }>
+  aiTip?: string | null
 }
 
 export const SelfServiceKnowledgeDeflection: React.FC<SelfServiceKnowledgeDeflectionProps> = ({
   query,
   wikiPages,
   onSelectPage,
+  serverSuggestions,
+  aiTip,
 }) => {
   if (!query || query.trim().length < 3) return null
 
-  const q = query.toLowerCase().trim()
-  const matchingPages = wikiPages
-    .filter((p) => p.visibility !== 'restricted')
-    .filter((p) => p.title.toLowerCase().includes(q) || p.content.toLowerCase().includes(q))
-    .slice(0, 3)
+  const hasServer = Array.isArray(serverSuggestions) && serverSuggestions.length > 0
+  const showAiTip = !hasServer && Boolean(aiTip)
 
-  if (matchingPages.length === 0) return null
+  const q = query.toLowerCase().trim()
+  const matchingPages = hasServer
+    ? serverSuggestions!
+        .map((s) => wikiPages.find((p) => p.id === s.id))
+        .filter((p): p is WikiPage => Boolean(p))
+        .slice(0, 4)
+    : wikiPages
+        .filter((p) => p.visibility !== 'restricted')
+        .filter((p) => p.title.toLowerCase().includes(q) || p.content.toLowerCase().includes(q))
+        .slice(0, 3)
+
+  if (matchingPages.length === 0 && !showAiTip) return null
 
   return (
     <div className="bg-sky-50/70 border border-sky-200/80 rounded-xl p-3 space-y-2 text-xs animate-in fade-in">
@@ -32,6 +45,13 @@ export const SelfServiceKnowledgeDeflection: React.FC<SelfServiceKnowledgeDeflec
       <p className="text-[11px] text-slate-600">
         These help articles might solve your issue right away without waiting for support:
       </p>
+
+      {showAiTip && (
+        <div className="p-2 bg-white rounded-lg border border-indigo-100 text-slate-700">
+          <span className="font-semibold text-indigo-700">Quick tip: </span>
+          {aiTip}
+        </div>
+      )}
 
       <div className="space-y-1.5 pt-0.5">
         {matchingPages.map((page) => (
