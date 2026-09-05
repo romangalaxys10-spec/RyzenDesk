@@ -908,6 +908,76 @@ async function startServer() {
     res.json(ticket)
   })
 
+  // Auto-QA suggestion engine (public, rate-limited): given what the customer
+  // is typing, surface matching FAQ/Wiki pages and canned-reply solutions.
+  // Keyword scoring now; Gemini enrichment when GEMINI_API_KEY is configured.
+  const STOPWORDS = new Set(['the', 'and', 'for', 'with', 'when', 'that', 'this', 'have', 'from', 'your', 'not', 'but', 'has', 'was', 'are', 'our', 'out', 'how', 'why', 'can', 'get', 'did', 'does', 'using', 'after', 'into', 'help', 'please', 'issue', 'error', 'working'])
+  function extractKeywords(text: string): string[] {
+    return [...new Set(
+      String(text || '')
+        .toLowerCase()
+        .replace(/[^a-z0-9\s-]/g, ' ')
+        .split(/\s+/)
+        .filter((w) => w.length >= 3 && !STOPWORDS.has(w))
+    )].slice(0, 12)
+  }
+
+  app.post(
+    '/api/suggest',
+    rateLimit({ windowMs: 60_000, max: 12, key: 'suggest' }),
+    async (req, res) => {
+    const { query } = req.body || {}
+    const text = String(query || '').trim()
+    if (text.length < 8) return res.json({ suggestions: [] })
+    const keywords = extractKeywords(text)
+    if (keywords.length === 0) return res.json({ suggestions: [] })
+
+    const db = getDb()
+    type Suggestion = { id: string; source: 'wiki'; title: string; snippet: string; score: number }
+    const results: Suggestion[] = []
+
+    // PUBLIC wiki pages only — canned replies are staff-internal and must never
+    // leak through this unauthenticated endpoint.
+    for (const p of db.wikiPages) {
+      if (p.visibility !== 'public') continue
+      const title = String(p.title || '').toLowerCase()
+      const content = String(p.content || '').toLowerCase()
+      let score = 0
+      for (const k of keywords) {
+        if (title.includes(k)) score += 3
+        if (content.includes(k)) score += 1
+      }
+      if (score >= 3) {
+        results.push({ id: p.id, source: 'wiki', title: p.title, snippet: String(p.content || '').slice(0, 200), score })
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score)
+    const suggestions = results.slice(0, 4)
+
+    // AI enrichment: when nothing in the KB matches, ask Gemini for a short
+    // self-help tip (silently skipped when no key / on any error).
+    let aiTip: string | null = null
+    if (suggestions.length === 0) {
+      const client = getGeminiClient()
+      if (client) {
+        try {
+          const response = await client.models.generateContent({
+            model: 'gemini-3.8-flash',
+            contents: `A customer is submitting a support ticket. In at most 2 sentences, give one practical self-help step they can try before submitting. Query: "${text.slice(0, 500)}"`,
+            config: { responseMimeType: 'text/plain' },
+          })
+          if (response.text) aiTip = response.text.trim().slice(0, 300)
+        } catch {
+          aiTip = null
+        }
+      }
+    }
+
+    res.json({ suggestions, aiTip })
+  }
+  )
+
   // Public ticket submission (documented token-based customer flow) — rate limited & validated
   app.post(
     '/api/tickets',
