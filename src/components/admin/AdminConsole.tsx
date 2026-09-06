@@ -21,7 +21,9 @@ import {
   Server,
   Wand2,
   Building2,
+  Megaphone,
 } from 'lucide-react'
+import { ContentAutomationAdmin } from './ContentAutomationAdmin'
 import type {
   StaffMember,
   StaffRole,
@@ -96,7 +98,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 }) => {
   const { t } = useI18n()
   const [activeTab, setActiveTab] = useState<
-    'rbac' | 'staff' | 'canned' | 'sla' | 'smtp' | 'webhooks' | 'audit' | 'github' | 'installer'
+    'rbac' | 'staff' | 'canned' | 'sla' | 'smtp' | 'webhooks' | 'audit' | 'github' | 'installer' | 'content'
   >('rbac')
 
   // RBAC Matrix local state
@@ -273,6 +275,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
     { key: 'admin_webhooks', label: 'Configure Webhooks & Zapier' },
     { key: 'admin_smtp', label: 'Configure SMTP Email Delivery' },
     { key: 'admin_cloud_sync', label: 'Trigger GitHub Cloud Sync' },
+    { key: 'admin_content', label: 'Manage Content & Automation Rules' },
     { key: 'analytics_view', label: 'View Real-Time Analytics' },
   ]
 
@@ -312,6 +315,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
           { id: 'smtp', label: 'Email & SMTP', icon: Mail },
           { id: 'webhooks', label: 'Webhooks & Zapier', icon: WebhookIcon },
           { id: 'audit', label: 'Audit Logs', icon: FileCheck2 },
+          { id: 'content', label: 'Content & Automation', icon: Megaphone },
           { id: 'github', label: 'Cloud Sync', icon: Github },
           { id: 'installer', label: 'Server Setup Wizard', icon: Server },
         ].map((tab) => {
@@ -876,6 +880,8 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
       )}
 
       {/* 7. COMPLIANCE AUDIT LOGS */}
+      {activeTab === 'content' && <ContentAutomationAdmin />}
+
       {activeTab === 'audit' && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-2xs p-5 space-y-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b pb-3 border-slate-100">

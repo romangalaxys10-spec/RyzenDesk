@@ -310,7 +310,102 @@ export interface RolePermissions {
   admin_smtp: boolean
   admin_cloud_sync: boolean
   admin_deploy: boolean
+  /** Manage announcements, network status components, downloads & automation rules */
+  admin_content: boolean
   analytics_view: boolean
+}
+
+/* ==========================================================================
+   Content, Automation & Live Chat (WHMCS/Kayako parity)
+   ========================================================================== */
+
+export interface Announcement {
+  id: string
+  title: string
+  body: string
+  published: boolean
+  author: string
+  createdAt: string
+  updatedAt: string
+}
+
+export type ComponentStatus = 'operational' | 'degraded' | 'outage' | 'maintenance'
+
+export interface StatusComponent {
+  id: string
+  name: string
+  status: ComponentStatus
+  description?: string
+  updatedAt: string
+}
+
+export interface DownloadItem {
+  id: string
+  title: string
+  description: string
+  url: string
+  published: boolean
+  createdAt: string
+}
+
+export type RuleField = 'subject' | 'body' | 'email' | 'type' | 'priority'
+export type RuleOperator = 'contains' | 'equals' | 'starts_with'
+export type RuleActionType = 'set_priority' | 'set_team' | 'set_type' | 'add_tag' | 'assign'
+
+export interface SupportRuleCondition {
+  field: RuleField
+  op: RuleOperator
+  value: string
+}
+
+export interface SupportRuleAction {
+  type: RuleActionType
+  value: string
+}
+
+export interface SupportRule {
+  id: string
+  name: string
+  enabled: boolean
+  match: 'all' | 'any'
+  conditions: SupportRuleCondition[]
+  actions: SupportRuleAction[]
+  runCount: number
+  createdAt: string
+  updatedAt: string
+}
+
+export interface ChatMessage {
+  id: string
+  from: 'client' | 'staff'
+  author: string
+  body: string
+  at: string
+}
+
+export interface ChatThread {
+  id: string
+  clientEmail: string
+  clientName: string
+  status: 'open' | 'closed'
+  messages: ChatMessage[]
+  createdAt: string
+  updatedAt: string
+}
+
+export interface CustomerContext {
+  email: string
+  fullName: string
+  tickets: Ticket[]
+  totals: {
+    count: number
+    open: number
+    resolved: number
+    avgCsat: number | null
+    firstSeen: string | null
+    lastTicketAt: string | null
+  }
+  portalUser: { zaiId: string; createdAt: string; hasToken: boolean } | null
 }
 
 export interface StaffMember {
@@ -343,7 +438,7 @@ export interface AuditEntry {
   actor: string
   actorRole: string
   action: string
-  module: 'tickets' | 'kanban' | 'wiki' | 'staff' | 'rbac' | 'system' | 'webhooks' | 'smtp'
+  module: 'tickets' | 'kanban' | 'wiki' | 'staff' | 'rbac' | 'system' | 'webhooks' | 'smtp' | 'chat' | 'content'
   entityId?: string
   detail: string
   ip?: string
@@ -498,6 +593,8 @@ export interface HelpdeskDB {
   }
   settings: {
     liveChatEnabled: boolean
+    aiTriageEnabled?: boolean
+    emailInboundSecret?: string
     installation?: InstallationSettings
     smtp: SMTPSettings
     telegram: TelegramSettings
@@ -515,4 +612,9 @@ export interface HelpdeskDB {
   webhooks: WebhookConfig[]
   webhookDeliveries: WebhookDelivery[]
   emailLogs: EmailNotificationLog[]
+  announcements: Announcement[]
+  statusComponents: StatusComponent[]
+  downloads: DownloadItem[]
+  rules: SupportRule[]
+  chats: ChatThread[]
 }

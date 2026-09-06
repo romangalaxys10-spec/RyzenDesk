@@ -14,6 +14,7 @@ import {
 import type { Ticket, WikiPage } from '../../types'
 import { SlaTimer } from '../helpdesk/SlaTimer'
 import { useI18n } from '../../i18n/translations'
+import { PortalExtras } from './PortalExtras'
 
 interface CustomerPortalProps {
   tickets: Ticket[]
@@ -68,6 +69,9 @@ export const CustomerPortal: React.FC<CustomerPortalProps> = ({
 
   return (
     <div className="space-y-6 max-w-5xl mx-auto pb-16">
+      {/* Announcements, Network Status, Downloads + Live Chat */}
+      <PortalExtras />
+
       {/* Hero Welcome Banner */}
       <div className="bg-gradient-to-br from-slate-900 via-sky-950 to-slate-900 text-white rounded-2xl p-8 border border-slate-800 shadow-md relative overflow-hidden">
         <div className="relative z-10 max-w-2xl space-y-3">

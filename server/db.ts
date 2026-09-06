@@ -90,6 +90,9 @@ export function sealSensitiveFields(db: HelpdeskDB): HelpdeskDB {
   if (clone.settings?.installation?.installationLockKey && !clone.settings.installation.installationLockKey.startsWith(SECRET_ENC_PREFIX)) {
     clone.settings.installation.installationLockKey = encryptAtRest(clone.settings.installation.installationLockKey)
   }
+  if (clone.settings?.emailInboundSecret && !clone.settings.emailInboundSecret.startsWith(SECRET_ENC_PREFIX)) {
+    clone.settings.emailInboundSecret = encryptAtRest(clone.settings.emailInboundSecret)
+  }
   if (Array.isArray(clone.users)) {
     for (const u of clone.users) {
       if (u.token && !isTokenHashed(u.token)) u.token = hashClientToken(u.token)
@@ -105,6 +108,7 @@ function unsealSensitiveFields(db: HelpdeskDB): HelpdeskDB {
   if (db.settings?.installation?.installationLockKey) {
     db.settings.installation.installationLockKey = decryptAtRest(db.settings.installation.installationLockKey)
   }
+  if (db.settings?.emailInboundSecret) db.settings.emailInboundSecret = decryptAtRest(db.settings.emailInboundSecret)
   return db
 }
 
@@ -153,6 +157,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_smtp: true,
     admin_cloud_sync: true,
     admin_deploy: true,
+    admin_content: true,
     analytics_view: true,
   },
   team_lead: {
@@ -182,6 +187,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_smtp: false,
     admin_cloud_sync: false,
     admin_deploy: false,
+    admin_content: false,
     analytics_view: true,
   },
   agent: {
@@ -211,6 +217,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_smtp: false,
     admin_cloud_sync: false,
     admin_deploy: false,
+    admin_content: false,
     analytics_view: true,
   },
   viewer: {
@@ -240,6 +247,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_smtp: false,
     admin_cloud_sync: false,
     admin_deploy: false,
+    admin_content: false,
     analytics_view: true,
   },
   client: {
@@ -269,6 +277,7 @@ export const DEFAULT_RBAC: Record<StaffRole, RolePermissions> = {
     admin_smtp: false,
     admin_cloud_sync: false,
     admin_deploy: false,
+    admin_content: false,
     analytics_view: false,
   },
 }
@@ -971,6 +980,33 @@ Welcome to RyzenDesk! Our helpdesk platform allows you to submit requests, track
         previewBody: 'Alex has escalated ticket RD-2026-0101 to you with reason: Level 2 architecture review.',
       },
     ],
+    announcements: [
+      {
+        id: 'ann_1',
+        title: 'Welcome to RyzenDesk 2.5',
+        body: 'This release adds email-to-ticket piping, an automation rules engine, AI triage, live chat, announcements, network status and a downloads area.',
+        published: true,
+        author: 'admin',
+        createdAt: now.toISOString(),
+        updatedAt: now.toISOString(),
+      },
+    ],
+    statusComponents: [
+      { id: 'stc_1', name: 'Support Portal', status: 'operational', description: 'Web portal and ticketing API', updatedAt: now.toISOString() },
+      { id: 'stc_2', name: 'Email Pipeline', status: 'operational', description: 'Inbound email-to-ticket ingestion', updatedAt: now.toISOString() },
+    ],
+    downloads: [
+      {
+        id: 'dl_1',
+        title: 'RyzenDesk Client Onboarding Guide (PDF)',
+        description: 'Step-by-step portal walkthrough for new customers.',
+        url: 'https://ryzendesk.internal/downloads/onboarding.pdf',
+        published: true,
+        createdAt: now.toISOString(),
+      },
+    ],
+    rules: [],
+    chats: [],
   }
 }
 
@@ -991,6 +1027,14 @@ function migrateDb(db: HelpdeskDB): HelpdeskDB {
   if (!db.settings) db.settings = seedDatabase().settings
   if (!db.settings.installation) db.settings.installation = { ...DEFAULT_INSTALLATION }
   if (!db.settings.rbac) db.settings.rbac = JSON.parse(JSON.stringify(DEFAULT_RBAC))
+  if (typeof db.settings.aiTriageEnabled === 'undefined') db.settings.aiTriageEnabled = false
+  if (typeof db.settings.emailInboundSecret === 'undefined') db.settings.emailInboundSecret = ''
+  // Collections introduced after v2.4 — old databases must not crash routes.
+  if (!Array.isArray(db.announcements)) db.announcements = []
+  if (!Array.isArray(db.statusComponents)) db.statusComponents = []
+  if (!Array.isArray(db.downloads)) db.downloads = []
+  if (!Array.isArray(db.rules)) db.rules = []
+  if (!Array.isArray(db.chats)) db.chats = []
 
   for (const role of Object.keys(DEFAULT_RBAC) as StaffRole[]) {
     if (!db.settings.rbac[role]) {

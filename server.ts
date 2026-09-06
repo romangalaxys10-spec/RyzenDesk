@@ -55,6 +55,8 @@ import type {
   InstallationConfig,
   InstallationSettings,
   SystemPreflightCheck,
+  CustomerContext,
+  ChatThread,
 } from './src/types'
 
 let geminiClient: GoogleGenAI | null = null
@@ -978,6 +980,477 @@ async function startServer() {
   }
   )
 
+  /* --------------------------------------------------------------------------
+     AUTOMATION RULES ENGINE + AI TRIAGE
+     - Rules are ordered, first-match-wins per rule, all rules evaluated
+       (a ticket can be touched by several rules); actions are allowlisted.
+     - AI triage (optional) only fills DEFAULT classification gaps the rules
+       left, so human configuration always wins over the model.
+     -------------------------------------------------------------------------- */
+
+  const RULE_ACTION_TEAMS = ['Support', 'Billing', 'Technical', 'Security']
+  const RULE_ACTION_TYPES = ['Billing', 'Service', 'Technical', 'Pre-sale', 'Abuse', 'Security']
+  const RULE_ACTION_PRIORITIES = ['low', 'medium', 'high', 'urgent']
+
+  function applyRules(ticket: Ticket): string[] {
+    const db = getDb()
+    const applied: string[] = []
+    for (const rule of db.rules || []) {
+      if (!rule.enabled) continue
+      const checks = (rule.conditions || []).map((c) => {
+        const fieldValue = String(
+          c.field === 'subject' ? ticket.subject :
+          c.field === 'body' ? ticket.body :
+          c.field === 'email' ? ticket.contact?.email || '' :
+          c.field === 'type' ? ticket.type :
+          c.field === 'priority' ? ticket.priority : ''
+        ).toLowerCase()
+        const needle = String(c.value || '').toLowerCase()
+        if (c.op === 'equals') return fieldValue === needle
+        if (c.op === 'starts_with') return fieldValue.startsWith(needle)
+        return fieldValue.includes(needle)
+      })
+      const matched = rule.match === 'all' ? checks.every(Boolean) : checks.some(Boolean)
+      if (!matched) continue
+
+      let touched = false
+      for (const a of rule.actions || []) {
+        const v = String(a.value || '').trim()
+        if (!v) continue
+        if (a.type === 'set_priority' && RULE_ACTION_PRIORITIES.includes(v) && ticket.priority !== v) {
+          ticket.priority = v as TicketPriority; touched = true
+        } else if (a.type === 'set_team' && RULE_ACTION_TEAMS.includes(v) && ticket.team !== v) {
+          ticket.team = v as Team; touched = true
+        } else if (a.type === 'set_type' && RULE_ACTION_TYPES.includes(v) && ticket.type !== v) {
+          ticket.type = v as IssueType; touched = true
+        } else if (a.type === 'add_tag' && !(ticket.tags || []).includes(v)) {
+          ticket.tags = [...(ticket.tags || []), v]; touched = true
+        } else if (a.type === 'assign' && ticket.assignee !== v) {
+          ticket.assignee = v; touched = true
+        }
+      }
+      if (touched) {
+        applied.push(rule.name)
+        rule.runCount = (rule.runCount || 0) + 1
+        rule.updatedAt = new Date().toISOString()
+      }
+    }
+    if (applied.length) ticket.updatedAt = new Date().toISOString()
+    return applied
+  }
+
+  async function aiTriageTicket(ticket: Ticket): Promise<void> {
+    const client = getGeminiClient()
+    if (!client) return
+    try {
+      const response = await client.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: `Classify this support ticket. Return ONLY a JSON object with keys "type" (one of: Billing, Service, Technical, Pre-sale, Abuse, Security), "priority" (one of: low, medium, high, urgent), "team" (one of: Support, Billing, Technical, Security).
+Subject: ${ticket.subject}
+Body: ${String(ticket.body || '').slice(0, 800)}`,
+        config: { responseMimeType: 'application/json' },
+      })
+      const parsed = JSON.parse(response.text || '{}')
+      let changed = false
+      // Only fill DEFAULT gaps — rules and explicit customer choices win.
+      if (parsed.type && RULE_ACTION_TYPES.includes(parsed.type) && ticket.type === 'Technical' && !ticket.tags?.includes('ai-triaged')) {
+        ticket.type = parsed.type; changed = true
+      }
+      if (parsed.priority && RULE_ACTION_PRIORITIES.includes(parsed.priority) && ticket.priority === 'medium') {
+        ticket.priority = parsed.priority; changed = true
+      }
+      if (parsed.team && RULE_ACTION_TEAMS.includes(parsed.team) && ticket.team === 'Support') {
+        ticket.team = parsed.team; changed = true
+      }
+      if (changed) {
+        ticket.tags = [...(ticket.tags || []), 'ai-triaged']
+        ticket.updatedAt = new Date().toISOString()
+        const db = getDb()
+        saveDb(db)
+        logAudit('ai-triage', 'super_admin', 'AI_TRIAGE_APPLIED', 'tickets', `AI triaged ${ticket.id}: type=${ticket.type} priority=${ticket.priority} team=${ticket.team}`, ticket.id)
+      }
+    } catch (err: any) {
+      console.warn('AI triage skipped:', err?.message || err)
+    }
+  }
+
+  /* --------------------------------------------------------------------------
+     EMAIL-TO-TICKET PIPING (inbound)
+     Provider-agnostic ingestion endpoint: point SendGrid Inbound Parse,
+     Mailgun Routes, Postmark inbound webhook, or a local fetchmail script at
+     POST /api/email/inbound with header X-Inbound-Secret: <emailInboundSecret>.
+     Body (generic JSON): { from: "Name <a@b.c>" | "a@b.c", to, subject, text }
+     - Subject contains an existing ticket id (RD-YYYY-NNNN) -> appended as a
+       client reply (email must match the ticket contact).
+     - Otherwise -> new ticket for that email address.
+     -------------------------------------------------------------------------- */
+
+  app.post(
+    '/api/email/inbound',
+    rateLimit({ windowMs: 60_000, max: 60, key: 'email-inbound' }),
+    (req, res) => {
+    const db = getDb()
+    const secret = db.settings.emailInboundSecret
+    if (!secret) return res.status(503).json({ error: 'Inbound email piping is not configured. Set a secret in Admin → Settings.' })
+    const provided = String(req.headers['x-inbound-secret'] || '')
+    const a = Buffer.from(provided); const b = Buffer.from(secret)
+    if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
+      return res.status(401).json({ error: 'Invalid inbound secret' })
+    }
+
+    const { from, subject, text } = req.body || {}
+    const rawFrom = String(from || '')
+    const emailMatch = rawFrom.match(/[\w.+-]+@[\w.-]+\.\w+/)
+    if (!emailMatch) return res.status(400).json({ error: 'Missing or invalid "from" address' })
+    const fromEmail = emailMatch[0].toLowerCase()
+    const fromName = rawFrom.replace(/<.*>/, '').replace(/"/g, '').trim() || fromEmail
+    const mailSubject = String(subject || '(no subject)')
+    const mailText = String(text || '').slice(0, 20000)
+    if (!mailText.trim()) return res.status(400).json({ error: 'Missing message text' })
+
+    // Reply routing: subject contains an existing ticket id
+    const idMatch = mailSubject.match(/RD-\d{4}-\d{3,5}/i)
+    if (idMatch) {
+      const ticket = db.tickets.find((t) => t.id.toLowerCase() === idMatch[0].toLowerCase())
+      if (ticket) {
+        if (ticket.contact.email.toLowerCase() !== fromEmail && !db.users.some((u) => u.email.toLowerCase() === fromEmail)) {
+          return res.status(403).json({ error: 'Reply address does not match the ticket contact' })
+        }
+        ticket.messages.push({
+          id: newId('msg'),
+          from: 'user',
+          author: fromName,
+          body: mailText,
+          at: new Date().toISOString(),
+          visibility: 'public',
+        })
+        ticket.updatedAt = new Date().toISOString()
+        saveDb(db)
+        scheduleCloudPush()
+        logAudit(fromEmail, 'client', 'TICKET_EMAILED_REPLY', 'tickets', `Email reply appended to ${ticket.id}`, ticket.id, req.ip)
+        return res.status(201).json({ success: true, appendedTo: ticket.id })
+      }
+    }
+
+    // New ticket from email
+    const now = new Date()
+    const ticketId = `RD-${now.getFullYear()}-${String(++db.meta.ticketCounter).padStart(4, '0')}`
+    let zaiId = db.users.find((u) => u.email.toLowerCase() === fromEmail)?.zaiId
+    if (!zaiId) {
+      zaiId = newId('usr')
+      db.users.push({ zaiId, fullName: fromName, email: fromEmail, token: hashClientToken(secureToken('zt', 12)), telegramChatId: null, createdAt: now.toISOString(), updatedAt: now.toISOString() })
+    }
+    const policy = db.settings.slaPolicies['medium'] || DEFAULT_SLA_POLICIES['medium']
+    const ticket: Ticket = {
+      id: ticketId,
+      zaiId,
+      contact: { zaiId, fullName: fromName, email: fromEmail, discordId: undefined },
+      subject: mailSubject,
+      type: 'Service',
+      status: 'open',
+      priority: 'medium',
+      team: 'Support',
+      assignee: null,
+      escalationLevel: 0,
+      escalations: [],
+      body: mailText,
+      reproduction: '',
+      attachments: [],
+      messages: [],
+      sla: {
+        responseDueAt: new Date(now.getTime() + policy.firstResponseHours * 3600_000).toISOString(),
+        resolutionDueAt: new Date(now.getTime() + policy.resolutionHours * 3600_000).toISOString(),
+        firstRespondedAt: null,
+        resolvedAt: null,
+        isResponseBreached: false,
+        isResolutionBreached: false,
+        warned: false,
+      },
+      tags: ['via-email'],
+      createdAt: now.toISOString(),
+      updatedAt: now.toISOString(),
+    }
+    db.tickets.unshift(ticket)
+    const appliedRules = applyRules(ticket)
+    saveDb(db)
+    scheduleCloudPush()
+    if (appliedRules.length) logAudit('system', 'super_admin', 'RULES_APPLIED', 'tickets', `Rules [${appliedRules.join(', ')}] applied to emailed ticket ${ticketId}`, ticketId, req.ip)
+    logAudit(fromEmail, 'client', 'TICKET_EMAILED_CREATED', 'tickets', `New ticket ${ticketId} created via inbound email`, ticketId, req.ip)
+    return res.status(201).json({ success: true, ticketId })
+  }
+  )
+
+  /* --------------------------------------------------------------------------
+     CUSTOM CONTEXT PANEL (Kayako "SingleView" parity)
+     -------------------------------------------------------------------------- */
+
+  app.get('/api/admin/customers/:email', requirePermission('tickets_view_all'), (req, res) => {
+    const db = getDb()
+    const email = String(req.params.email || '').toLowerCase()
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return res.status(400).json({ error: 'Invalid email' })
+    const tickets = db.tickets.filter((t) => (t.contact?.email || '').toLowerCase() === email)
+    const user = db.users.find((u) => u.email.toLowerCase() === email)
+    const csats = tickets.map((t) => t.csat?.rating).filter((s): s is number => typeof s === 'number')
+    const ctx: CustomerContext = {
+      email,
+      fullName: tickets[0]?.contact?.fullName || user?.fullName || email,
+      tickets: tickets.map((t) => ({ id: t.id, subject: t.subject, status: t.status, priority: t.priority, createdAt: t.createdAt, updatedAt: t.updatedAt })) as Ticket[],
+      totals: {
+        count: tickets.length,
+        open: tickets.filter((t) => t.status !== 'resolved' && t.status !== 'closed').length,
+        resolved: tickets.filter((t) => t.status === 'resolved' || t.status === 'closed').length,
+        avgCsat: csats.length ? Math.round((csats.reduce((x, y) => x + y, 0) / csats.length) * 10) / 10 : null,
+        firstSeen: user?.createdAt || tickets[tickets.length - 1]?.createdAt || null,
+        lastTicketAt: tickets[0]?.createdAt || null,
+      },
+      portalUser: user ? { zaiId: user.zaiId, createdAt: user.createdAt, hasToken: true } : null,
+    }
+    res.json(ctx)
+  })
+
+  /* --------------------------------------------------------------------------
+     LIVE CHAT (client <-> staff, polling-based)
+     - Gated by settings.liveChatEnabled.
+     - Clients start threads from the portal; staff answer from Admin > Live Chat.
+     -------------------------------------------------------------------------- */
+
+  app.post('/api/chat/start', (req, res) => {
+    const db = getDb()
+    if (!db.settings.liveChatEnabled) return res.status(503).json({ error: 'Live chat is disabled', code: 'CHAT_DISABLED' })
+    // Identity: logged-in customers use their session; anonymous portal
+    // visitors may provide name+email (the thread id then acts as the capability).
+    let email = ''
+    let name = ''
+    const kind = req.user?.kind
+    if (kind === 'client') {
+      email = (req.user!.email || '').toLowerCase()
+      name = req.user!.displayName
+    } else if (kind === 'staff') {
+      return res.status(403).json({ error: 'Staff cannot start customer chats' })
+    } else {
+      email = String(req.body?.email || '').toLowerCase().trim()
+      name = String(req.body?.name || '').trim()
+      if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return res.status(400).json({ error: 'A valid email is required to start a chat' })
+      }
+      name = name || email.split('@')[0]
+    }
+    const existing = db.chats.find((c) => c.clientEmail === email && c.status === 'open')
+    if (existing) return res.json(existing)
+    const thread: ChatThread = {
+      id: newId('chat'),
+      clientEmail: email,
+      clientName: name,
+      status: 'open',
+      messages: [{ id: newId('msg'), from: 'client', author: name, body: '👋 Chat started', at: new Date().toISOString() }],
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+    }
+    db.chats.unshift(thread)
+    db.chats = db.chats.slice(0, 200)
+    saveDb(db)
+    logAudit(email, 'client', 'CHAT_STARTED', 'chat', `Live chat ${thread.id} started`, thread.id, req.ip)
+    res.status(201).json(thread)
+  })
+
+  app.get('/api/chat/threads', requirePermission('tickets_view_all'), (req, res) => {
+    const db = getDb()
+    if (!db.settings.liveChatEnabled) return res.status(503).json({ error: 'Live chat is disabled', code: 'CHAT_DISABLED' })
+    res.json(db.chats)
+  })
+
+  app.get('/api/chat/:id/messages', (req, res) => {
+    const db = getDb()
+    if (!db.settings.liveChatEnabled) return res.status(503).json({ error: 'Live chat is disabled', code: 'CHAT_DISABLED' })
+    const thread = db.chats.find((c) => c.id === req.params.id)
+    if (!thread) return res.status(404).json({ error: 'Chat not found' })
+    // The thread id is an unguessable capability token; anonymous portal
+    // visitors holding it are the chat owners.
+    res.json(thread)
+  })
+
+  app.post('/api/chat/:id/messages', rateLimit({ windowMs: 60_000, max: 30, key: 'chat-msg' }), (req, res) => {
+    const db = getDb()
+    if (!db.settings.liveChatEnabled) return res.status(503).json({ error: 'Live chat is disabled', code: 'CHAT_DISABLED' })
+    const thread = db.chats.find((c) => c.id === req.params.id)
+    if (!thread) return res.status(404).json({ error: 'Chat not found' })
+    if (thread.status !== 'open') return res.status(409).json({ error: 'Chat is closed' })
+    const isStaff = req.user?.kind === 'staff'
+    const body = String(req.body?.body || '').trim()
+    if (!body) return res.status(400).json({ error: 'Message body required' })
+    thread.messages.push({ id: newId('msg'), from: isStaff ? 'staff' : 'client', author: isStaff ? req.user!.displayName : thread.clientName, body: body.slice(0, 2000), at: new Date().toISOString() })
+    if (thread.messages.length > 300) thread.messages = thread.messages.slice(-300)
+    thread.updatedAt = new Date().toISOString()
+    saveDb(db)
+    res.status(201).json(thread)
+  })
+
+  app.post('/api/chat/:id/close', (req, res) => {
+    const db = getDb()
+    const thread = db.chats.find((c) => c.id === req.params.id)
+    if (!thread) return res.status(404).json({ error: 'Chat not found' })
+    thread.status = 'closed'
+    thread.updatedAt = new Date().toISOString()
+    saveDb(db)
+    res.json(thread)
+  })
+
+  /* --------------------------------------------------------------------------
+     ANNOUNCEMENTS / NETWORK STATUS / DOWNLOADS (public read, admin_content write)
+     -------------------------------------------------------------------------- */
+
+  app.get('/api/announcements', (req, res) => {
+    const db = getDb()
+    res.json(db.announcements.filter((a) => a.published).slice(0, 10))
+  })
+
+  app.get('/api/status-page', (req, res) => {
+    const db = getDb()
+    const overall = db.statusComponents.some((c) => c.status === 'outage')
+      ? 'outage'
+      : db.statusComponents.some((c) => c.status === 'degraded' || c.status === 'maintenance')
+        ? 'degraded'
+        : 'operational'
+    res.json({ overall, components: db.statusComponents })
+  })
+
+  app.get('/api/downloads', (req, res) => {
+    const db = getDb()
+    res.json(db.downloads.filter((d) => d.published))
+  })
+
+  function contentCrud(path: string, collection: 'announcements' | 'statusComponents' | 'downloads', requirePublishedField: boolean) {
+    app.get(`/api/admin/${path}`, requirePermission('admin_content'), (req, res) => {
+      res.json(getDb()[collection])
+    })
+    app.post(`/api/admin/${path}`, requirePermission('admin_content'), (req, res) => {
+      const db = getDb()
+      const b = req.body || {}
+      const nowIso = new Date().toISOString()
+      const id = newId(path.slice(0, 3))
+      let item: any
+      if (collection === 'announcements') {
+        if (!b.title || !b.body) return res.status(400).json({ error: 'Title and body are required' })
+        item = { id, title: String(b.title).slice(0, 200), body: String(b.body).slice(0, 10000), published: Boolean(b.published), author: req.user!.username, createdAt: nowIso, updatedAt: nowIso }
+      } else if (collection === 'statusComponents') {
+        if (!b.name) return res.status(400).json({ error: 'Name is required' })
+        const VALID = ['operational', 'degraded', 'outage', 'maintenance']
+        if (!VALID.includes(String(b.status))) return res.status(400).json({ error: `Invalid status. Allowed: ${VALID.join(', ')}` })
+        item = { id, name: String(b.name).slice(0, 120), status: b.status, description: String(b.description || '').slice(0, 500), updatedAt: nowIso }
+      } else {
+        if (!b.title || !b.url) return res.status(400).json({ error: 'Title and url are required' })
+        item = { id, title: String(b.title).slice(0, 200), description: String(b.description || '').slice(0, 500), url: String(b.url).slice(0, 1000), published: requirePublishedField ? Boolean(b.published) : true, createdAt: nowIso }
+      }
+      db[collection].unshift(item as any)
+      saveDb(db)
+      scheduleCloudPush()
+      logAudit(req.user!.username, req.user!.role, 'CONTENT_ITEM_CREATED', 'content', `Created ${path} item "${item.title || item.name}"`, id, req.ip)
+      res.status(201).json(item)
+    })
+    app.put(`/api/admin/${path}/:id`, requirePermission('admin_content'), (req, res) => {
+      const db = getDb()
+      const item = (db[collection] as any[]).find((x) => x.id === req.params.id)
+      if (!item) return res.status(404).json({ error: 'Item not found' })
+      const b = req.body || {}
+      if (collection === 'announcements') {
+        if (typeof b.title === 'string') item.title = b.title.slice(0, 200)
+        if (typeof b.body === 'string') item.body = b.body.slice(0, 10000)
+        if (typeof b.published === 'boolean') item.published = b.published
+        item.updatedAt = new Date().toISOString()
+      } else if (collection === 'statusComponents') {
+        const VALID = ['operational', 'degraded', 'outage', 'maintenance']
+        if (typeof b.name === 'string') item.name = b.name.slice(0, 120)
+        if (typeof b.status === 'string') {
+          if (!VALID.includes(b.status)) return res.status(400).json({ error: `Invalid status. Allowed: ${VALID.join(', ')}` })
+          item.status = b.status
+          item.updatedAt = new Date().toISOString()
+        }
+        if (typeof b.description === 'string') item.description = b.description.slice(0, 500)
+      } else {
+        if (typeof b.title === 'string') item.title = b.title.slice(0, 200)
+        if (typeof b.description === 'string') item.description = b.description.slice(0, 500)
+        if (typeof b.url === 'string') item.url = b.url.slice(0, 1000)
+        if (typeof b.published === 'boolean') item.published = b.published
+      }
+      saveDb(db)
+      scheduleCloudPush()
+      res.json(item)
+    })
+    app.delete(`/api/admin/${path}/:id`, requirePermission('admin_content'), (req, res) => {
+      const db = getDb()
+      const before = (db[collection] as any[]).length
+      db[collection] = (db[collection] as any[]).filter((x) => x.id !== req.params.id) as any
+      if (db[collection].length === before) return res.status(404).json({ error: 'Item not found' })
+      saveDb(db)
+      scheduleCloudPush()
+      res.json({ success: true })
+    })
+  }
+  contentCrud('announcements', 'announcements', true)
+  contentCrud('status-components', 'statusComponents', false)
+  contentCrud('downloads', 'downloads', true)
+
+  // Automation rules admin
+  app.get('/api/admin/rules', requirePermission('admin_content'), (req, res) => {
+    res.json(getDb().rules)
+  })
+
+  app.put('/api/admin/rules', requirePermission('admin_content'), (req, res) => {
+    const db = getDb()
+    const rules = req.body
+    if (!Array.isArray(rules) || rules.length > 100) return res.status(400).json({ error: 'Body must be an array of rules (max 100)' })
+    const FIELDS = ['subject', 'body', 'email', 'type', 'priority']
+    const OPS = ['contains', 'equals', 'starts_with']
+    const ACTIONS = ['set_priority', 'set_team', 'set_type', 'add_tag', 'assign']
+    for (const r of rules) {
+      if (!r || typeof r !== 'object' || typeof r.name !== 'string' || typeof r.enabled !== 'boolean') {
+        return res.status(400).json({ error: 'Each rule needs name (string) and enabled (boolean)' })
+      }
+      if (!Array.isArray(r.conditions) || !Array.isArray(r.actions)) {
+        return res.status(400).json({ error: 'Rule needs conditions[] and actions[]' })
+      }
+      for (const c of r.conditions) {
+        if (!FIELDS.includes(c.field) || !OPS.includes(c.op)) return res.status(400).json({ error: `Invalid condition (field: ${FIELDS.join('/')}, op: ${OPS.join('/')})` })
+      }
+      for (const a of r.actions) {
+        if (!ACTIONS.includes(a.type)) return res.status(400).json({ error: `Invalid action type. Allowed: ${ACTIONS.join('/')}` })
+      }
+    }
+    db.rules = rules.map((r: any) => ({ ...r, runCount: r.runCount || 0, updatedAt: new Date().toISOString() }))
+    saveDb(db)
+    scheduleCloudPush()
+    logAudit(req.user!.username, req.user!.role, 'RULES_UPDATED', 'content', `Automation rules updated (${db.rules.length} rules)`, undefined, req.ip)
+    res.json(db.rules)
+  })
+
+  // System content settings toggles (super admin)
+  app.put('/api/admin/settings', requireSuperAdmin, (req, res) => {
+    const db = getDb()
+    const b = req.body || {}
+    if (typeof b.liveChatEnabled === 'boolean') db.settings.liveChatEnabled = b.liveChatEnabled
+    if (typeof b.aiTriageEnabled === 'boolean') db.settings.aiTriageEnabled = b.aiTriageEnabled
+    if (typeof b.emailInboundSecret === 'string') {
+      db.settings.emailInboundSecret = b.emailInboundSecret.trim()
+    }
+    saveDb(db)
+    logAudit(req.user!.username, req.user!.role, 'CONTENT_SETTINGS_UPDATED', 'content', 'Updated system content/automation settings', undefined, req.ip)
+    res.json({
+      success: true,
+      liveChatEnabled: db.settings.liveChatEnabled,
+      aiTriageEnabled: db.settings.aiTriageEnabled,
+      emailInboundConfigured: Boolean(db.settings.emailInboundSecret),
+    })
+  })
+
+  app.get('/api/admin/settings', requireSuperAdmin, (req, res) => {
+    const db = getDb()
+    res.json({
+      liveChatEnabled: db.settings.liveChatEnabled,
+      aiTriageEnabled: db.settings.aiTriageEnabled,
+      emailInboundConfigured: Boolean(db.settings.emailInboundSecret),
+    })
+  })
+
   // Public ticket submission (documented token-based customer flow) — rate limited & validated
   app.post(
     '/api/tickets',
@@ -1060,11 +1533,25 @@ async function startServer() {
     }
 
     db.tickets.unshift(newTicket)
+
+    // Automation rules engine: evaluate enabled rules against the fresh ticket
+    const appliedRules = applyRules(newTicket)
+
     saveDb(db)
     scheduleCloudPush()
 
+    // AI triage (optional, async, non-blocking): fills classification gaps
+    // the rules engine left, using the Gemini client when configured.
+    if (db.settings.aiTriageEnabled) {
+      void aiTriageTicket(newTicket)
+    }
+
     // Trigger Notifications & Webhooks
     notifyTicketCreated(ticketId, newTicket.subject, newTicket.contact.email, secretToken)
+    if (appliedRules.length) {
+      logAudit('system', 'super_admin', 'RULES_APPLIED', 'tickets', `Rules [${appliedRules.join(', ')}] applied to ${ticketId}`, ticketId, req.ip)
+      void triggerWebhooks('ticket.rules_applied', { ticketId, rules: appliedRules })
+    }
     void triggerWebhooks('ticket.created', {
       ticketId: newTicket.id,
       subject: newTicket.subject,
