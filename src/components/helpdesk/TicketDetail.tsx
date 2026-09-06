@@ -22,6 +22,7 @@ import { SlaTimer } from './SlaTimer'
 import { AttachmentList, AttachmentUploader } from './AttachmentViewer'
 import { CannedRepliesModal } from './CannedRepliesModal'
 import { useI18n } from '../../i18n/translations'
+import { CustomerContextCard } from './CustomerContextCard'
 import { TicketAIPanel } from './TicketAIPanel'
 import { TicketTimeTracker } from './TicketTimeTracker'
 import { CustomerCSATWidget } from './CustomerCSATWidget'
@@ -226,6 +227,9 @@ export const TicketDetail: React.FC<TicketDetailProps> = ({
 
         {/* SLA Timers Bar */}
         <SlaTimer sla={ticket.sla} status={ticket.status} />
+
+        {/* Customer context (staff with tickets_view_all only) */}
+        {isStaff && <CustomerContextCard email={ticket.contact.email} />}
 
         {/* Customer & Ticket Metadata */}
         <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs bg-slate-50/70 p-3 rounded-lg border border-slate-100">

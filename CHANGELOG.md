@@ -6,6 +6,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.5.0] - 2026-09-06
+
+### 🚀 Added — Competitor-Parity Feature Wave (WHMCS / Kayako)
+
+- **Email-to-Ticket Piping** (`POST /api/email/inbound`): provider-agnostic inbound webhook (SendGrid Inbound Parse, Mailgun Routes, Postmark, or a local fetchmail script). Authenticates with a shared secret (`X-Inbound-Secret`, stored AES-256-GCM encrypted at rest). Subjects containing an existing ticket id (`RD-YYYY-NNNN`) become client replies (sender must match the ticket contact or a portal user); everything else becomes a new ticket tagged `via-email`. Automation rules apply to emailed tickets too.
+- **Automation Rules Engine**: ordered, first-match-wins rules (`subject/body/email/type/priority` × `contains/equals/starts_with`, match *all/any*) driving allowlisted actions (`set_priority`, `set_team`, `set_type`, `add_tag`, `assign`). Evaluated on every new ticket (web **and** emailed); run counts tracked; managed under Admin ▸ Content & Automation (`admin_content` permission).
+- **AI Triage** (optional): when `GEMINI_API_KEY` is set and AI triage is enabled, new tickets are auto-classified (type/priority/team) — strictly filling only default gaps so rules and explicit customer choices always win; tagged `ai-triaged` and audited.
+- **Live Chat**: portal visitors (anonymous name+email or logged-in clients) start threads; staff answer from the new chat endpoints (REST polling, capability-token thread ids). Activates the previously dead `liveChatEnabled` setting.
+- **Announcements** — published posts surfaced on the customer portal.
+- **Network Status page** (`GET /api/status-page`) with per-component status (`operational/degraded/outage/maintenance`) and an aggregate overall status.
+- **Downloads area** — published file links on the customer portal.
+- **Customer Context Panel** (Kayako *SingleView* parity): staff ticket view aggregates the contact's entire ticket history, open/resolved counts, average CSAT and portal-account info (`GET /api/admin/customers/:email`, `tickets_view_all` enforced).
+- **New RBAC permission** `admin_content` ("Manage Content & Automation Rules") — super_admin + team_lead by default, backfilled into existing databases by the migration.
+
+### 🔧 Fixed (during full E2E QA)
+- `PATCH /api/tickets/:id` now rejects invalid `status`/`priority` values (previously persisted verbatim, poisoning filtered queue views).
+- `POST /api/admin/staff` rejects invalid roles with 400 instead of silently coercing to `agent`.
+
+### 🧪 QA
+- 61+ check end-to-end suite extended with chat, rules-engine, email-piping and content-CRUD flows — all green; `tsc` clean; production build green; `npm audit` 0 vulnerabilities.
+
+---
+
 ## [2.4.1] - 2026-09-06
 
 ### 🛡️ Post-Audit Re-Verification Fixes

@@ -94,6 +94,22 @@ RyzenDesk treats security as a feature, not an afterthought. The full hardening 
 
 ## ⚡ Key Features & Productivity Suite
 
+### 📬 Omnichannel Intake & Automation (v2.5)
+- **Email-to-Ticket Piping**: provider-agnostic inbound webhook (SendGrid Inbound Parse, Mailgun Routes, Postmark, or a local fetchmail script). Replies containing a ticket id (`RD-YYYY-NNNN`) are appended to the existing thread (sender-verified); anything else opens a new ticket tagged `via-email`. Shared secret auth (`X-Inbound-Secret`) stored AES-256-GCM encrypted at rest.
+- **Automation Rules Engine**: no-code rules (`subject/body/email/type/priority` × `contains/equals/starts_with`, match *all/any*) with allowlisted actions (`set_priority`, `set_team`, `set_type`, `add_tag`, `assign`). Run on every new ticket — web *and* emailed — with run counters and audit entries.
+- **AI Triage** (optional, Gemini): auto-classifies type/priority/team on arrival, strictly filling only default gaps so rules and customer choices always win; audited and tagged `ai-triaged`.
+- **Auto-QA Suggestion Engine**: keyword-scored matching over the public Knowledge Base while the customer types (rate-limited), plus an optional Gemini "quick tip" when no article matches — deflecting tickets before they're submitted.
+
+### 💬 Live Chat & Customer Context
+- **Live Chat**: portal visitors (anonymous name+email or logged-in clients) start threads via a floating widget; staff answer from the chat endpoints — REST polling, unguessable capability-token thread ids, toggled by `liveChatEnabled`.
+- **Customer Context Panel**: one glance shows the contact's full ticket history, open/resolved counts, average CSAT and portal-account info right inside the ticket view (Kayako *SingleView* parity).
+
+### 📣 Portal Content Suite
+- **Announcements**: published posts surfaced on the customer portal.
+- **Network Status**: per-component health (`operational / degraded / outage / maintenance`) with an aggregate overall status at `GET /api/status-page`.
+- **Downloads Area**: curated, publishable file links for customers.
+- All managed under **Admin ▸ Content & Automation** via the new `admin_content` RBAC permission (super_admin + team_lead by default).
+
 ### 🤖 AI Copilot & Automated Intelligence (Powered by Gemini)
 - **One-Click Ticket Summarization**: Condenses extensive multi-message customer threads into actionable bullets, root cause diagnostics, and recommended next actions.
 - **Smart Response Generator**: Generates 3 contextual response options (e.g. detailed step-by-step diagnostic, quick acknowledgement, or gentle follow-up) inserted directly into the editor.
