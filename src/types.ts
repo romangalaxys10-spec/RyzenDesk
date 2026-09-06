@@ -408,6 +408,43 @@ export interface CustomerContext {
   portalUser: { zaiId: string; createdAt: string; hasToken: boolean } | null
 }
 
+/* ==========================================================================
+   Pluggable AI Providers (NVIDIA NIM first-class + any OpenAI-compatible)
+   ========================================================================== */
+
+export type AiProviderKind = 'nvidia_nim' | 'custom'
+
+export interface AiProvider {
+  id: string
+  name: string
+  kind: AiProviderKind
+  /** OpenAI-compatible base URL, e.g. https://integrate.api.nvidia.com/v1 */
+  baseUrl: string
+  /** Sealed at rest (AES-256-GCM) — never returned by the API */
+  apiKey: string
+  /** Selected model; for NIM this is auto-picked by the latency scan */
+  model: string
+  enabled: boolean
+  lastScanAt?: string
+  lastScanResults?: Array<{ model: string; ms: number | null; ok: boolean }>
+  createdAt: string
+  updatedAt: string
+}
+
+export interface AiProviderPublic {
+  id: string
+  name: string
+  kind: AiProviderKind
+  baseUrl: string
+  model: string
+  enabled: boolean
+  hasKey: boolean
+  lastScanAt?: string
+  lastScanResults?: Array<{ model: string; ms: number | null; ok: boolean }>
+  createdAt: string
+  updatedAt: string
+}
+
 export interface StaffMember {
   username: string
   displayName: string
@@ -595,6 +632,8 @@ export interface HelpdeskDB {
     liveChatEnabled: boolean
     aiTriageEnabled?: boolean
     emailInboundSecret?: string
+    aiProviders?: AiProvider[]
+    activeAiProviderId?: string
     installation?: InstallationSettings
     smtp: SMTPSettings
     telegram: TelegramSettings
