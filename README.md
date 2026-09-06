@@ -110,6 +110,12 @@ RyzenDesk treats security as a feature, not an afterthought. The full hardening 
 - **Downloads Area**: curated, publishable file links for customers.
 - All managed under **Admin ▸ Content & Automation** via the new `admin_content` RBAC permission (super_admin + team_lead by default).
 
+### 🧠 Pluggable AI Providers — NVIDIA NIM + Custom (v2.6)
+- **NVIDIA NIM first-class**: paste a free `nvapi-…` key, hit **Scan Models** — RyzenDesk ranks the free NIM catalog by speed heuristics, latency-probes the top candidates in parallel, and auto-selects the fastest working model.
+- **Custom providers**: any OpenAI-compatible API (self-hosted vLLM/ollama, OpenRouter, Groq, …).
+- **One AI gateway for everything**: AI triage, ticket summarization, response generation and the self-help quick-tip all use the active provider first, falling back to Gemini and then to built-in heuristics — never vendor-locked.
+- **Key safety**: provider keys are AES-256-GCM encrypted at rest and never leave the server.
+
 ### 🤖 AI Copilot & Automated Intelligence (Powered by Gemini)
 - **One-Click Ticket Summarization**: Condenses extensive multi-message customer threads into actionable bullets, root cause diagnostics, and recommended next actions.
 - **Smart Response Generator**: Generates 3 contextual response options (e.g. detailed step-by-step diagnostic, quick acknowledgement, or gentle follow-up) inserted directly into the editor.

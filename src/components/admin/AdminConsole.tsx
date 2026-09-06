@@ -22,8 +22,10 @@ import {
   Wand2,
   Building2,
   Megaphone,
+  Cpu,
 } from 'lucide-react'
 import { ContentAutomationAdmin } from './ContentAutomationAdmin'
+import { AiProvidersAdmin } from './AiProvidersAdmin'
 import type {
   StaffMember,
   StaffRole,
@@ -98,7 +100,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 }) => {
   const { t } = useI18n()
   const [activeTab, setActiveTab] = useState<
-    'rbac' | 'staff' | 'canned' | 'sla' | 'smtp' | 'webhooks' | 'audit' | 'github' | 'installer' | 'content'
+    'rbac' | 'staff' | 'canned' | 'sla' | 'smtp' | 'webhooks' | 'audit' | 'github' | 'installer' | 'content' | 'ai'
   >('rbac')
 
   // RBAC Matrix local state
@@ -316,6 +318,7 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
           { id: 'webhooks', label: 'Webhooks & Zapier', icon: WebhookIcon },
           { id: 'audit', label: 'Audit Logs', icon: FileCheck2 },
           { id: 'content', label: 'Content & Automation', icon: Megaphone },
+          { id: 'ai', label: 'AI Providers', icon: Cpu },
           { id: 'github', label: 'Cloud Sync', icon: Github },
           { id: 'installer', label: 'Server Setup Wizard', icon: Server },
         ].map((tab) => {
@@ -881,6 +884,8 @@ export const AdminConsole: React.FC<AdminConsoleProps> = ({
 
       {/* 7. COMPLIANCE AUDIT LOGS */}
       {activeTab === 'content' && <ContentAutomationAdmin />}
+
+      {activeTab === 'ai' && <AiProvidersAdmin />}
 
       {activeTab === 'audit' && (
         <div className="bg-white rounded-xl border border-slate-200 shadow-2xs p-5 space-y-4">

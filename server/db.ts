@@ -93,6 +93,9 @@ export function sealSensitiveFields(db: HelpdeskDB): HelpdeskDB {
   if (clone.settings?.emailInboundSecret && !clone.settings.emailInboundSecret.startsWith(SECRET_ENC_PREFIX)) {
     clone.settings.emailInboundSecret = encryptAtRest(clone.settings.emailInboundSecret)
   }
+  for (const p of clone.settings?.aiProviders || []) {
+    if (p.apiKey && !p.apiKey.startsWith(SECRET_ENC_PREFIX)) p.apiKey = encryptAtRest(p.apiKey)
+  }
   if (Array.isArray(clone.users)) {
     for (const u of clone.users) {
       if (u.token && !isTokenHashed(u.token)) u.token = hashClientToken(u.token)
@@ -109,6 +112,9 @@ function unsealSensitiveFields(db: HelpdeskDB): HelpdeskDB {
     db.settings.installation.installationLockKey = decryptAtRest(db.settings.installation.installationLockKey)
   }
   if (db.settings?.emailInboundSecret) db.settings.emailInboundSecret = decryptAtRest(db.settings.emailInboundSecret)
+  for (const p of db.settings?.aiProviders || []) {
+    if (p.apiKey && !p.apiKey.startsWith(SECRET_ENC_PREFIX)) p.apiKey = decryptAtRest(p.apiKey)
+  }
   return db
 }
 
@@ -321,6 +327,8 @@ export function seedDatabase(): HelpdeskDB {
       },
       slaPolicies: DEFAULT_SLA_POLICIES,
       rbac: DEFAULT_RBAC,
+      aiProviders: [],
+      activeAiProviderId: '',
     },
     users: [
       {
@@ -1029,6 +1037,8 @@ function migrateDb(db: HelpdeskDB): HelpdeskDB {
   if (!db.settings.rbac) db.settings.rbac = JSON.parse(JSON.stringify(DEFAULT_RBAC))
   if (typeof db.settings.aiTriageEnabled === 'undefined') db.settings.aiTriageEnabled = false
   if (typeof db.settings.emailInboundSecret === 'undefined') db.settings.emailInboundSecret = ''
+  if (!Array.isArray(db.settings.aiProviders)) db.settings.aiProviders = []
+  if (typeof db.settings.activeAiProviderId === 'undefined') db.settings.activeAiProviderId = ''
   // Collections introduced after v2.4 — old databases must not crash routes.
   if (!Array.isArray(db.announcements)) db.announcements = []
   if (!Array.isArray(db.statusComponents)) db.statusComponents = []

@@ -55,6 +55,8 @@ import type {
   InstallationConfig,
   InstallationSettings,
   SystemPreflightCheck,
+  AiProvider,
+  AiProviderPublic,
   CustomerContext,
   ChatThread,
 } from './src/types'
@@ -66,6 +68,61 @@ function getGeminiClient(): GoogleGenAI | null {
     geminiClient = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY })
   }
   return geminiClient
+}
+
+/* --------------------------------------------------------------------------
+   Unified AI gateway: active pluggable provider (NVIDIA NIM / custom
+   OpenAI-compatible) first, Gemini fallback, null when nothing configured.
+   Every AI feature (triage, summaries, suggestions) routes through here.
+   -------------------------------------------------------------------------- */
+
+async function callAI(prompt: string, opts?: { json?: boolean; maxTokens?: number }): Promise<string | null> {
+  const db = getDb()
+  const provider = (db.settings.aiProviders || []).find(
+    (p) => p.id === db.settings.activeAiProviderId && p.enabled && p.apiKey && p.model
+  )
+  if (provider) {
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 30_000)
+      const res = await fetch(`${provider.baseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { Authorization: `Bearer ${provider.apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: provider.model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: opts?.maxTokens ?? 600,
+          temperature: 0.2,
+        }),
+      })
+      clearTimeout(timer)
+      if (res.ok) {
+        const data = await res.json()
+        const content = data?.choices?.[0]?.message?.content
+        if (typeof content === 'string' && content.trim()) return content.trim()
+      } else {
+        console.warn(`[ai] provider ${provider.name} HTTP ${res.status}; falling back`)
+      }
+    } catch (err: any) {
+      console.warn(`[ai] provider ${provider.name} failed: ${err?.message || err}; falling back`)
+    }
+  }
+
+  const gemini = getGeminiClient()
+  if (gemini) {
+    try {
+      const response = await gemini.models.generateContent({
+        model: 'gemini-3.8-flash',
+        contents: prompt,
+        config: opts?.json ? { responseMimeType: 'application/json' } : {},
+      })
+      return response.text ?? null
+    } catch (err: any) {
+      console.warn('[ai] gemini fallback failed:', err?.message || err)
+    }
+  }
+  return null
 }
 
 // In-memory active presence tracker: ticketId -> Map<username, { timestamp: number, action: 'viewing' | 'typing' }>
@@ -957,23 +1014,12 @@ async function startServer() {
     results.sort((a, b) => b.score - a.score)
     const suggestions = results.slice(0, 4)
 
-    // AI enrichment: when nothing in the KB matches, ask Gemini for a short
-    // self-help tip (silently skipped when no key / on any error).
+    // AI enrichment: when nothing in the KB matches, ask the active AI provider
+    // for a short self-help tip (silently skipped when none configured).
     let aiTip: string | null = null
     if (suggestions.length === 0) {
-      const client = getGeminiClient()
-      if (client) {
-        try {
-          const response = await client.models.generateContent({
-            model: 'gemini-3.8-flash',
-            contents: `A customer is submitting a support ticket. In at most 2 sentences, give one practical self-help step they can try before submitting. Query: "${text.slice(0, 500)}"`,
-            config: { responseMimeType: 'text/plain' },
-          })
-          if (response.text) aiTip = response.text.trim().slice(0, 300)
-        } catch {
-          aiTip = null
-        }
-      }
+      aiTip = await callAI(`A customer is submitting a support ticket. In at most 2 sentences, give one practical self-help step they can try before submitting. Query: "${text.slice(0, 500)}"`, { maxTokens: 150 })
+      if (aiTip) aiTip = aiTip.slice(0, 300)
     }
 
     res.json({ suggestions, aiTip })
@@ -1040,17 +1086,12 @@ async function startServer() {
   }
 
   async function aiTriageTicket(ticket: Ticket): Promise<void> {
-    const client = getGeminiClient()
-    if (!client) return
     try {
-      const response = await client.models.generateContent({
-        model: 'gemini-3.8-flash',
-        contents: `Classify this support ticket. Return ONLY a JSON object with keys "type" (one of: Billing, Service, Technical, Pre-sale, Abuse, Security), "priority" (one of: low, medium, high, urgent), "team" (one of: Support, Billing, Technical, Security).
+      const response = await callAI(`Classify this support ticket. Return ONLY a JSON object with keys "type" (one of: Billing, Service, Technical, Pre-sale, Abuse, Security), "priority" (one of: low, medium, high, urgent), "team" (one of: Support, Billing, Technical, Security).
 Subject: ${ticket.subject}
-Body: ${String(ticket.body || '').slice(0, 800)}`,
-        config: { responseMimeType: 'application/json' },
-      })
-      const parsed = JSON.parse(response.text || '{}')
+Body: ${String(ticket.body || '').slice(0, 800)}`, { json: true, maxTokens: 120 })
+      if (!response) return
+      const parsed = JSON.parse(response)
       let changed = false
       // Only fill DEFAULT gaps — rules and explicit customer choices win.
       if (parsed.type && RULE_ACTION_TYPES.includes(parsed.type) && ticket.type === 'Technical' && !ticket.tags?.includes('ai-triaged')) {
@@ -1449,6 +1490,197 @@ Body: ${String(ticket.body || '').slice(0, 800)}`,
       aiTriageEnabled: db.settings.aiTriageEnabled,
       emailInboundConfigured: Boolean(db.settings.emailInboundSecret),
     })
+  })
+
+  /* --------------------------------------------------------------------------
+     AI PROVIDER REGISTRY (NVIDIA NIM first-class + custom OpenAI-compatible)
+     Super-admin managed; API keys AES-256-GCM sealed at rest, never returned.
+     -------------------------------------------------------------------------- */
+
+  const NIM_BASE_URL = 'https://integrate.api.nvidia.com/v1'
+  function toPublicProvider(p: AiProvider): AiProviderPublic {
+    const { apiKey, ...rest } = p
+    return { ...rest, hasKey: Boolean(apiKey) }
+  }
+
+  function resolveProviderBaseUrl(kind: string, baseUrl?: string): string {
+    const base = String(baseUrl || '').trim()
+    if (base) return base.replace(/\/$/, '')
+    if (kind === 'nvidia_nim') return NIM_BASE_URL
+    return ''
+  }
+
+  /** Latency heuristics: NVIDIA's catalog is huge, so prefer ids that smell small & fast. */
+  function nimSpeedHint(modelId: string): number {
+    const id = modelId.toLowerCase()
+    let score = 0
+    if (id.includes('nano')) score += 100
+    if (id.includes('mini')) score += 80
+    if (id.includes('flash')) score += 70
+    if (id.includes('tiny')) score += 65
+    if (id.includes('small')) score += 55
+    if (id.includes('speed')) score += 50
+    if (id.includes('instant')) score += 50
+    for (const [n, pts] of [['3b', 45], ['4b', 40], ['8b', 35], ['7b', 30], ['9b', 28]] as const) {
+      if (id.includes(n)) score += pts
+    }
+    if (id.includes('70b') || id.includes('405b') || id.includes('large')) score -= 60
+    return score
+  }
+
+  async function probeModel(baseUrl: string, apiKey: string, model: string): Promise<{ model: string; ms: number | null; ok: boolean }> {
+    const started = Date.now()
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 12_000)
+      const res = await fetch(`${baseUrl.replace(/\/$/, '')}/chat/completions`, {
+        method: 'POST',
+        signal: controller.signal,
+        headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model, messages: [{ role: 'user', content: 'Reply with the single word: OK' }], max_tokens: 5, temperature: 0 }),
+      })
+      clearTimeout(timer)
+      const ms = Date.now() - started
+      if (!res.ok) return { model, ms: null, ok: false }
+      const data = await res.json()
+      const ok = Boolean(data?.choices?.[0]?.message?.content)
+      return { model, ms: ok ? ms : null, ok }
+    } catch {
+      return { model, ms: null, ok: false }
+    }
+  }
+
+  app.get('/api/admin/ai-providers', requireSuperAdmin, (req, res) => {
+    const db = getDb()
+    res.json({ providers: (db.settings.aiProviders || []).map(toPublicProvider), activeAiProviderId: db.settings.activeAiProviderId || '' })
+  })
+
+  app.post('/api/admin/ai-providers', requireSuperAdmin, (req, res) => {
+    const db = getDb()
+    const { name, kind, baseUrl, apiKey, model } = req.body || {}
+    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'Name is required' })
+    if (!['nvidia_nim', 'custom'].includes(String(kind))) return res.status(400).json({ error: 'kind must be nvidia_nim or custom' })
+    const resolvedBase = resolveProviderBaseUrl(String(kind), baseUrl)
+    if (!resolvedBase) return res.status(400).json({ error: 'baseUrl is required for custom providers' })
+    if (!apiKey || String(apiKey).length < 8) return res.status(400).json({ error: 'A valid apiKey is required' })
+    const nowIso = new Date().toISOString()
+    const provider: AiProvider = {
+      id: newId('aip'),
+      name: String(name).slice(0, 80),
+      kind: kind as AiProvider['kind'],
+      baseUrl: resolvedBase,
+      apiKey: String(apiKey),
+      model: String(model || '').slice(0, 160),
+      enabled: true,
+      createdAt: nowIso,
+      updatedAt: nowIso,
+    }
+    db.settings.aiProviders = [...(db.settings.aiProviders || []), provider]
+    // First provider becomes active automatically
+    if (!db.settings.activeAiProviderId) db.settings.activeAiProviderId = provider.id
+    saveDb(db)
+    logAudit(req.user!.username, req.user!.role, 'AI_PROVIDER_ADDED', 'system', `AI provider "${provider.name}" (${provider.kind}) added`, provider.id, req.ip)
+    res.status(201).json(toPublicProvider(provider))
+  })
+
+  // NOTE: declared BEFORE '/:id' so 'active' is not captured as an id param.
+  app.put('/api/admin/ai-providers/active', requireSuperAdmin, (req, res) => {
+    const db = getDb()
+    const id = String(req.body?.id || '')
+    if (id && !(db.settings.aiProviders || []).some((p) => p.id === id)) {
+      return res.status(404).json({ error: 'Provider not found' })
+    }
+    db.settings.activeAiProviderId = id
+    saveDb(db)
+    res.json({ success: true, activeAiProviderId: id })
+  })
+
+  app.put('/api/admin/ai-providers/:id', requireSuperAdmin, (req, res) => {
+    const db = getDb()
+    const provider = (db.settings.aiProviders || []).find((p) => p.id === req.params.id)
+    if (!provider) return res.status(404).json({ error: 'Provider not found' })
+    const b = req.body || {}
+    if (typeof b.name === 'string' && b.name.trim()) provider.name = b.name.trim().slice(0, 80)
+    if (typeof b.baseUrl === 'string' && b.baseUrl.trim()) provider.baseUrl = b.baseUrl.trim().replace(/\/$/, '')
+    if (typeof b.apiKey === 'string' && b.apiKey.trim().length >= 8) provider.apiKey = b.apiKey.trim()
+    if (typeof b.model === 'string') provider.model = b.model.slice(0, 160)
+    if (typeof b.enabled === 'boolean') provider.enabled = b.enabled
+    provider.updatedAt = new Date().toISOString()
+    saveDb(db)
+    res.json(toPublicProvider(provider))
+  })
+
+  app.delete('/api/admin/ai-providers/:id', requireSuperAdmin, (req, res) => {
+    const db = getDb()
+    const before = (db.settings.aiProviders || []).length
+    db.settings.aiProviders = (db.settings.aiProviders || []).filter((p) => p.id !== req.params.id)
+    if (db.settings.aiProviders.length === before) return res.status(404).json({ error: 'Provider not found' })
+    if (db.settings.activeAiProviderId === req.params.id) db.settings.activeAiProviderId = db.settings.aiProviders.find((p) => p.enabled)?.id || ''
+    saveDb(db)
+    res.json({ success: true })
+  })
+
+  // Scan: list provider models, rank by speed heuristics, latency-probe the
+  // most promising ones, auto-select the fastest working model.
+  app.post('/api/admin/ai-providers/:id/scan', requireSuperAdmin, async (req, res) => {
+    const db = getDb()
+    const provider = (db.settings.aiProviders || []).find((p) => p.id === req.params.id)
+    if (!provider) return res.status(404).json({ error: 'Provider not found' })
+    if (!provider.apiKey) return res.status(400).json({ error: 'Provider has no API key configured' })
+
+    let modelIds: string[] = []
+    try {
+      const controller = new AbortController()
+      const timer = setTimeout(() => controller.abort(), 15_000)
+      const listRes = await fetch(`${provider.baseUrl.replace(/\/$/, '')}/models`, {
+        headers: { Authorization: `Bearer ${provider.apiKey}` },
+        signal: controller.signal,
+      })
+      if (!listRes.ok) { clearTimeout(timer); return res.status(502).json({ error: `Model listing failed: HTTP ${listRes.status}` }) }
+      const data = await listRes.json()
+      clearTimeout(timer)
+      modelIds = (data?.data || []).map((m: any) => String(m.id || m)).filter(Boolean)
+    } catch (err: any) {
+      return res.status(502).json({ error: `Model listing failed: ${err?.message || err}` })
+    }
+    if (modelIds.length === 0) return res.status(502).json({ error: 'Provider returned no models' })
+
+    // Probe the most promising candidates (fast-hint order), max 12, in parallel waves of 4
+    const candidates = [...modelIds].sort((a, b) => nimSpeedHint(b) - nimSpeedHint(a)).slice(0, 12)
+    const results: Array<{ model: string; ms: number | null; ok: boolean }> = []
+    for (let i = 0; i < candidates.length; i += 4) {
+      const wave = candidates.slice(i, i + 4)
+      results.push(...(await Promise.all(wave.map((m) => probeModel(provider.baseUrl, provider.apiKey, m)))))
+    }
+
+    const working = results.filter((r) => r.ok && r.ms !== null).sort((a, b) => (a.ms || 0) - (b.ms || 0))
+    provider.lastScanAt = new Date().toISOString()
+    provider.lastScanResults = results
+    if (working.length > 0) {
+      provider.model = working[0].model
+      provider.enabled = true
+      if (!db.settings.activeAiProviderId) db.settings.activeAiProviderId = provider.id
+    }
+    provider.updatedAt = new Date().toISOString()
+    saveDb(db)
+    logAudit(req.user!.username, req.user!.role, 'AI_PROVIDER_SCANNED', 'system', `Scanned ${provider.name}: ${working.length}/${results.length} models responded; selected "${provider.model || 'none'}"`, provider.id, req.ip)
+    res.json({
+      scanned: results.length,
+      working: working.length,
+      selected: provider.model || null,
+      ranking: working,
+      failures: results.filter((r) => !r.ok).map((r) => r.model),
+    })
+  })
+
+  // Quick connectivity + completion test for a saved provider
+  app.post('/api/admin/ai-providers/:id/test', requireSuperAdmin, async (req, res) => {
+    const db = getDb()
+    const provider = (db.settings.aiProviders || []).find((p) => p.id === req.params.id)
+    if (!provider) return res.status(404).json({ error: 'Provider not found' })
+    if (!provider.model) return res.status(400).json({ error: 'No model selected — run a scan or set a model first' })
+    const probe = await probeModel(provider.baseUrl, provider.apiKey, provider.model)
+    res.json({ ok: probe.ok, latencyMs: probe.ms, model: provider.model })
   })
 
   // Public ticket submission (documented token-based customer flow) — rate limited & validated
@@ -2065,42 +2297,30 @@ Body: ${String(ticket.body || '').slice(0, 800)}`,
       ...ticket.messages.map((m) => `[${m.from === 'user' ? 'Client' : 'Staff'} (${m.author}) at ${m.at}]: ${m.body}`),
     ].join('\n\n')
 
-    const client = getGeminiClient()
-    if (client) {
-      try {
-        const prompt = `You are an expert technical support supervisor for RyzenDesk. Analyze the following support ticket conversation and return a clean JSON object with these exact keys:
+    const aiText = await callAI(`You are an expert technical support supervisor for RyzenDesk. Analyze the following support ticket conversation and return a clean JSON object with these exact keys:
 - "executiveSummary": 2-3 concise sentences explaining the core issue and current status.
 - "rootCause": The underlying reason for the customer's problem or inquiry.
 - "sentiment": One of "frustrated", "neutral", "positive", or "urgent".
 - "recommendedAction": The single best next action step for the support engineer to resolve this ticket.
 
 Ticket Thread:
-${threadText}`
+${threadText}`, { json: true, maxTokens: 500 })
 
-        const response = await client.models.generateContent({
-          model: 'gemini-3.8-flash',
-          contents: prompt,
-          config: {
-            responseMimeType: 'application/json',
-          },
-        })
-
-        const text = response.text
-        if (text) {
-          const parsed = JSON.parse(text)
-          ticket.aiSummary = {
-            executiveSummary: parsed.executiveSummary || 'Executive summary generated.',
-            rootCause: parsed.rootCause || 'Root cause identified.',
-            sentiment: parsed.sentiment || 'neutral',
-            recommendedAction: parsed.recommendedAction || 'Follow up with customer.',
-            generatedAt: new Date().toISOString(),
-          }
-          ticket.sentiment = ticket.aiSummary.sentiment
-          saveDb(db)
-          return res.json(ticket.aiSummary)
+    if (aiText) {
+      try {
+        const parsed = JSON.parse(aiText)
+        ticket.aiSummary = {
+          executiveSummary: parsed.executiveSummary || 'Executive summary generated.',
+          rootCause: parsed.rootCause || 'Root cause identified.',
+          sentiment: parsed.sentiment || 'neutral',
+          recommendedAction: parsed.recommendedAction || 'Follow up with customer.',
+          generatedAt: new Date().toISOString(),
         }
-      } catch (err: any) {
-        console.warn('Gemini summarization fallback triggered:', err?.message || err)
+        ticket.sentiment = ticket.aiSummary.sentiment
+        saveDb(db)
+        return res.json(ticket.aiSummary)
+      } catch {
+        /* fall through to heuristics on malformed JSON */
       }
     }
 

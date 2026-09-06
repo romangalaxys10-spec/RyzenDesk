@@ -6,6 +6,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ---
 
+## [2.6.0] - 2026-09-06
+
+### 🚀 Added — Pluggable AI Providers (NVIDIA NIM first-class)
+
+- **NVIDIA NIM support**: admins add a free `nvapi-…` key (Admin ▸ AI Providers); the CRM lists NIM's model catalog, **auto-scans for the fastest model** (speed-heuristic shortlist → parallel latency probes) and auto-selects the winner for all AI features.
+- **Custom AI providers**: any OpenAI-compatible endpoint (self-hosted vLLM/ollama, OpenRouter, Groq…) — name, base URL, key, model.
+- **Unified AI gateway**: AI triage, ticket summaries + sentiment, response generation and the suggestion quick-tip all route through the active provider first, with the previous Gemini integration retained as automatic fallback and pure heuristics as last resort — zero hard dependency on any vendor.
+- **Key security**: provider API keys are AES-256-GCM sealed at rest and never returned by the API (`hasKey` flag only). Scan/test endpoints are super-admin only.
+
+---
+
 ## [2.5.0] - 2026-09-06
 
 ### 🚀 Added — Competitor-Parity Feature Wave (WHMCS / Kayako)
